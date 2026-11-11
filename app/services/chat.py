@@ -4,7 +4,7 @@ from typing import Any
 
 from app.collectors import collect_all_metrics, get_recent_metrics
 from app.db import get_conn, now_iso
-from app.services.llm import generate_answer
+from app.services.llm import generate_answer, strip_markdown
 from app.services.tasks import due_soon_tasks, list_tasks, monthly_expense_summary
 
 
@@ -27,7 +27,13 @@ def recent_chat(limit: int = 20) -> list[dict[str, Any]]:
             """,
             (limit,),
         ).fetchall()
-    return list(reversed([dict(r) for r in rows]))
+    items: list[dict[str, Any]] = []
+    for row in reversed(rows):
+        item = dict(row)
+        if item.get("role") == "assistant":
+            item["content"] = strip_markdown(item.get("content") or "")
+        items.append(item)
+    return items
 
 
 def ask(question: str, refresh_metrics: bool = False) -> dict[str, Any]:

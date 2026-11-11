@@ -14,25 +14,40 @@ SYSTEM_PROMPT = """당신은 광고 성과와 업무 리마인드를 돕는 한�
 답변은 짧고 실행 가능하게: 요약 → 이상 징후 → 오늘 할 일 순으로 작성하세요.
 금액은 원 단위, 비율은 %로 표기하세요.
 
-중요: 마크다운을 쓰지 마세요.
-별표(**), 샵(#), 백틱(`), --- 구분선, HTML 태그를 넣지 마세요.
-일반 텍스트와 짧은 줄글(-)만 사용하세요.
+절대 규칙(위반 금지):
+- 마크다운 금지. **, *, __, #, `, ---, HTML 태그 금지.
+- 제목도 별표로 감싸지 말고 그냥 '요약:' 처럼 평문으로 쓰세요.
+- 목록은 '-' 또는 숫자만 사용하세요.
+- 강조가 필요하면 문장으로만 말하세요.
 """
 
 
 def strip_markdown(text: str) -> str:
-    """메일/화면용으로 마크다운 장식을 제거합니다."""
+    """메일/채팅용으로 마크다운 장식을 제거합니다."""
     cleaned = text or ""
     cleaned = cleaned.replace("\r\n", "\n")
-    cleaned = re.sub(r"[ \t]*={3,}[ \t]*", "", cleaned)
-    cleaned = re.sub(r"[ \t]*-{3,}[ \t]*", "", cleaned)
+    # fenced code / inline code
+    cleaned = re.sub(r"```[\w-]*\n?", "", cleaned)
     cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
-    cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
-    cleaned = re.sub(r"__([^_]+)__", r"\1", cleaned)
-    cleaned = re.sub(r"(?<!\w)\*([^*\n]+)\*(?!\w)", r"\1", cleaned)
-    cleaned = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"\1", cleaned)
+    # bold/italic (여러 번 적용해 중첩·잔여 제거)
+    for _ in range(3):
+        cleaned = re.sub(r"\*\*\*([^*]+)\*\*\*", r"\1", cleaned)
+        cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
+        cleaned = re.sub(r"__([^_]+)__", r"\1", cleaned)
+        cleaned = re.sub(r"(?<!\w)\*([^*\n]+)\*(?!\w)", r"\1", cleaned)
+        cleaned = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"\1", cleaned)
+    # 짝 안 맞는 별표/밑줄 잔여물
+    cleaned = cleaned.replace("***", "").replace("**", "")
+    cleaned = re.sub(r"(?<!\w)_(?!\w)", "", cleaned)
+    # 별표 bullet → 대시
+    cleaned = re.sub(r"^(\s*)\*\s+", r"\1- ", cleaned, flags=re.MULTILINE)
+    # 줄 단위 장식
     cleaned = re.sub(r"^#{1,6}\s*", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"^\s*>\s?", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"[ \t]*={3,}[ \t]*", "", cleaned)
+    cleaned = re.sub(r"[ \t]*-{3,}[ \t]*", "", cleaned)
+    # 남은 단독 *
+    cleaned = re.sub(r"(?<![\w-])\*(?![\w-])", "", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
@@ -96,7 +111,8 @@ def _call_gemini(question: str, context: dict[str, Any], settings: Settings) -> 
         f"{SYSTEM_PROMPT}\n\n"
         f"컨텍스트(JSON):\n{context}\n\n"
         f"사용자 질문: {question}\n\n"
-        "위 데이터만 사용해서 답하세요."
+        "위 데이터만 사용해서 답하세요.\n"
+        "다시 한번: 별표(**)나 마크다운 없이 평문만 출력하세요."
     )
     payload = {
         "contents": [
