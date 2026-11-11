@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ app_name }}</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div>
+      <p class="eyebrow">모바일 질의 · 매일 메일 리포트</p>
+      <h1>{{ app_name }}</h1>
+    </div>
+    <div class="status-lights" title="연동 상태">
+      <button type="button" class="light-item" id="openTokenGuide" aria-label="토큰 안내">
+        <span class="light {% if demo_mode %}amber{% else %}green{% endif %}"></span>
+        <span>LIVE</span>
+      </button>
+      <span class="light-item" title="{{ 'Gemini 연결됨' if llm_ready else 'Gemini 미연결' }}">
+        <span class="light {% if llm_ready %}green{% else %}red{% endif %}"></span>
+        <span>Gemini</span>
+      </span>
+      <span class="light-item" title="{{ 'Email 연결됨' if email_ready else 'Email 미연결' }}">
+        <span class="light {% if email_ready %}green{% else %}red{% endif %}"></span>
+        <span>Email</span>
+      </span>
+      <span class="light-item" title="{{ integrations.google_ads.title }}">
+        <span class="light {% if google_ready %}green{% else %}red{% endif %}"></span>
+        <span>Google</span>
+      </span>
+      <span class="light-item" title="{{ meta_status.title }} — {{ meta_status.message }}">
+        <span class="light {% if not meta_ready or meta_status.level == 'danger' %}red{% elif meta_status.level == 'warn' or meta_status.status == 'expiring_soon' %}amber{% else %}green{% endif %}"></span>
+        <span>Meta{% if meta_status.days_left is not none and meta_status.days_left <= 7 %} {{ meta_status.days_left }}d{% endif %}</span>
+      </span>
+    </div>
+  </header>
+
+  {% if integrations.alerts %}
+  <div class="alerts">
+    {% for alert in integrations.alerts %}
+    <div class="alert {{ alert.level }}" data-provider="{{ alert.provider }}" data-alert-key="{{ alert.provider }}-{{ alert.status }}">
+      <div>
+        <strong>{{ alert.title }}</strong>
+        <p>{{ alert.message }}</p>
+      </div>
+      <div class="alert-actions">
+        <button type="button" class="ghost open-guide" data-focus="{{ alert.provider }}">해결 방법</button>
+        <button type="button" class="ghost" data-dismiss-alert>닫기</button>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <main class="layout">
+    <section class="panel chat-panel">
+      <div class="panel-head">
+        <h2>실시간 질의</h2>
+        <label class="refresh">
+          <input type="checkbox" id="refreshMetrics" />
+          최신 성과 다시 수집
+        </label>
+      </div>
+      <div id="chatLog" class="chat-log">
+        {% for msg in chat %}
+        <div class="bubble {{ msg.role }}">
+          <div class="meta">{{ msg.role }} · {{ msg.created_at }}</div>
+          <div class="content">{{ msg.content }}</div>
+        </div>
+        {% else %}
+        <div class="bubble assistant">
+          <div class="content">예: “어제 메타 ROAS 어때?”, “이번 주 납부 일정 알려줘”</div>
+        </div>
+        {% endfor %}
+      </div>
+      <form id="chatForm" class="chat-form">
+        <textarea id="question" rows="2" placeholder="광고 성과나 할 일을 물어보세요" required></textarea>
+        <button type="submit">보내기</button>
+      </form>
+    </section>
+
+    <section class="side">
+      <article class="panel">
+        <div class="panel-head">
+          <h2>최근 성과</h2>
+          <button id="refreshBtn" type="button" class="ghost">API 새로고침</button>
+        </div>
+        <div class="date-row">
+          <label for="metricDate">조회 날짜</label>
+          <input type="date" id="metricDate" value="{{ selected_metric_date }}" max="{{ selected_metric_date }}" />
+          <button type="button" class="ghost" id="loadDateBtn">조회</button>
+        </div>
+        <p class="muted" id="metricsHint">날짜를 고르면 해당일 Google/Meta 성과를 보여줍니다.</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>채널</th><th>일자</th><th>지출</th><th>클릭</th><th>설치</th><th>설치율</th><th>CPI</th>
+              </tr>
+            </thead>
+            <tbody id="metricsBody">
+              {% for m in metrics %}
+              <tr>
+                <td>{{ m.platform }}</td>
+                <td>{{ m.metric_date }}</td>
+                <td>{{ '{:,.0f}'.format(m.spend) }}</td>
+                <td>{{ m.clicks }}</td>
+                <td>{{ '{:,.0f}'.format(m.installs or 0) }}</td>
+                <td>
+                  {% if m.install_rate is defined %}
+                    {{ '{:.1f}'.format(m.install_rate) }}%
+                  {% elif m.clicks %}
+                    {{ '{:.1f}'.format(((m.installs or 0) / m.clicks) * 100) }}%
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
+                <td>
+                  {% if m.cpi is defined and m.cpi %}
+                    {{ '{:,.0f}'.format(m.cpi) }}
+                  {% elif (m.installs or 0) and m.spend %}
+                    {{ '{:,.0f}'.format(m.spend / m.installs) }}
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
+              </tr>
+              {% else %}
+              <tr>
+                <td colspan="7" class="muted">선택한 날짜 데이터가 없습니다. API 새로고침을 눌러보세요.</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-head">
+          <h2>할 일 달력</h2>
+          <div class="cal-nav">
+            <button type="button" class="ghost" id="calPrev">‹</button>
+            <strong id="calLabel">{{ task_calendar.label }}</strong>
+            <button type="button" class="ghost" id="calNext">›</button>
+          </div>
+        </div>
+        <div class="calendar" id="taskCalendar"
+             data-year="{{ task_calendar.year }}"
+             data-month="{{ task_calendar.month }}">
+          <div class="cal-weekdays">
+            <span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span><span>일</span>
+          </div>
+          <div class="cal-grid" id="calGrid">
+            {% for cell in task_calendar.cells %}
+              {% if cell.date %}
+              <button type="button"
+                      class="cal-cell {% if cell.is_today %}today{% endif %} {% if cell.events %}has-events{% endif %}"
+                      data-date="{{ cell.date }}">
+                <span class="cal-day">{{ cell.day }}</span>
+                {% for ev in cell.events[:2] %}
+                <span class="cal-chip {% if ev.completed %}done{% endif %} {% if ev.is_recurring %}recur{% endif %}">{{ ev.title }}</span>
+                {% endfor %}
+                {% if cell.events|length > 2 %}
+                <span class="cal-more">+{{ cell.events|length - 2 }}</span>
+                {% endif %}
+              </button>
+              {% else %}
+              <div class="cal-cell empty"></div>
+              {% endif %}
+            {% endfor %}
+          </div>
+        </div>
+        <div class="day-events" id="dayEvents">
+          <h3 id="dayEventsTitle">날짜를 선택하세요</h3>
+          <ul class="list" id="dayEventsList">
+            <li class="muted">달력에서 날짜를 누르면 할 일이 표시됩니다.</li>
+          </ul>
+        </div>
+        <form method="post" action="/ui/tasks" class="mini-form" id="taskForm">
+          <input name="title" placeholder="할 일 (예: 보험료 납부)" required />
+          <select name="category">
+            <option value="finance">finance</option>
+            <option value="tax">tax</option>
+            <option value="ads">ads</option>
+            <option value="general">general</option>
+          </select>
+          <label class="check-row">
+            <input type="checkbox" id="monthlyToggle" />
+            매달 반복 (예: 매달 10일)
+          </label>
+          <input type="hidden" name="recurrence" id="taskRecurrence" value="none" />
+          <div id="oneTimeFields">
+            <input name="due_date" id="taskDueDate" type="date" />
+          </div>
+          <div id="monthlyFields" hidden>
+            <input name="recur_day" id="taskRecurDay" type="number" min="1" max="31" placeholder="매달 며칠? (예: 10)" />
+          </div>
+          <button type="submit">추가</button>
+        </form>
+      </article>
+
+      <article class="panel">
+        <h2>이번 달 지출</h2>
+        <p class="stat">
+          총 <strong>{{ '{:,.0f}'.format(expenses.total) }}원</strong>
+          · {{ expenses.count }}건
+        </p>
+        <form method="post" action="/ui/expenses" class="mini-form">
+          <input name="amount" type="number" step="1" placeholder="금액" required />
+          <input name="category" placeholder="분류 (예: tax)" value="misc" />
+          <input name="vendor" placeholder="사용처" />
+          <button type="submit">지출 기록</button>
+        </form>
+      </article>
+    </section>
+  </main>
+
+  <div class="modal-backdrop" id="tokenModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="tokenModalTitle">
+      <div class="modal-head">
+        <h2 id="tokenModalTitle">토큰 안내</h2>
+        <button type="button" class="ghost" id="closeTokenModal">닫기</button>
+      </div>
+
+      <div class="modal-body">
+        <section>
+          <h3>1) 짧은 Meta 토큰 받기</h3>
+          <ol>
+            {% for step in integrations.guide.meta_short %}
+            <li>{{ step }}</li>
+            {% endfor %}
+          </ol>
+          <p class="muted">
+            <a href="{{ integrations.guide.links.graph_explorer }}" target="_blank" rel="noopener">Graph API Explorer 열기</a>
+          </p>
+        </section>
+
+        <section>
+          <h3>2) 장기 토큰(약 60일)으로 바꾸기</h3>
+          <ol>
+            {% for step in integrations.guide.meta_long %}
+            <li>{{ step }}</li>
+            {% endfor %}
+          </ol>
+          <p class="muted">
+            App ID/Secret:
+            <a href="{{ integrations.guide.links.meta_apps }}" target="_blank" rel="noopener">Meta 앱 설정</a>
+            → 앱 선택 → 설정 → 기본
+          </p>
+          <p class="status-line" id="appCredStatus">
+            {% if meta_app_ready %}
+              App ID/Secret: 설정됨
+            {% else %}
+              App ID/Secret: 아직 없음 (.env에 META_APP_ID, META_APP_SECRET 필요)
+            {% endif %}
+          </p>
+        </section>
+
+        <section>
+          <h3>3) 지금 교환하기</h3>
+          <p class="muted">Graph Explorer에서 받은 짧은 토큰을 붙여넣거나, 비워두면 현재 .env 토큰을 교환합니다.</p>
+          <textarea id="shortTokenInput" rows="3" placeholder="짧은 Meta 액세스 토큰 (선택)"></textarea>
+          <div class="modal-actions">
+            <button type="button" id="extendTokenBtn">장기 토큰으로 교환</button>
+          </div>
+          <p class="status-line" id="extendResult"></p>
+        </section>
+
+        <section>
+          <h3>Google Ads</h3>
+          <ol>
+            {% for step in integrations.guide.google %}
+            <li>{{ step }}</li>
+            {% endfor %}
+          </ol>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

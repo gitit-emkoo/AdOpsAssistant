@@ -1,0 +1,61 @@
+name: Daily Ad Report
+
+on:
+  schedule:
+    # 매주 월-금 00:10 UTC = 한국시간 09:10
+    - cron: "10 0 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write .env from secrets
+        env:
+          DEMO_MODE: ${{ secrets.DEMO_MODE }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          GOOGLE_ADS_DEVELOPER_TOKEN: ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
+          GOOGLE_ADS_CLIENT_ID: ${{ secrets.GOOGLE_ADS_CLIENT_ID }}
+          GOOGLE_ADS_CLIENT_SECRET: ${{ secrets.GOOGLE_ADS_CLIENT_SECRET }}
+          GOOGLE_ADS_REFRESH_TOKEN: ${{ secrets.GOOGLE_ADS_REFRESH_TOKEN }}
+          GOOGLE_ADS_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_CUSTOMER_ID }}
+          GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          META_AD_ACCOUNT_ID: ${{ secrets.META_AD_ACCOUNT_ID }}
+        run: |
+          {
+            echo "DEMO_MODE=${DEMO_MODE:-true}"
+            echo "GEMINI_API_KEY=${GEMINI_API_KEY}"
+            echo "SMTP_HOST=smtp.gmail.com"
+            echo "SMTP_PORT=587"
+            echo "SMTP_USER=${SMTP_USER}"
+            echo "SMTP_PASSWORD=${SMTP_PASSWORD}"
+            echo "EMAIL_FROM=${EMAIL_FROM}"
+            echo "EMAIL_TO=${EMAIL_TO}"
+            echo "GOOGLE_ADS_DEVELOPER_TOKEN=${GOOGLE_ADS_DEVELOPER_TOKEN}"
+            echo "GOOGLE_ADS_CLIENT_ID=${GOOGLE_ADS_CLIENT_ID}"
+            echo "GOOGLE_ADS_CLIENT_SECRET=${GOOGLE_ADS_CLIENT_SECRET}"
+            echo "GOOGLE_ADS_REFRESH_TOKEN=${GOOGLE_ADS_REFRESH_TOKEN}"
+            echo "GOOGLE_ADS_CUSTOMER_ID=${GOOGLE_ADS_CUSTOMER_ID}"
+            echo "GOOGLE_ADS_LOGIN_CUSTOMER_ID=${GOOGLE_ADS_LOGIN_CUSTOMER_ID}"
+            echo "META_ACCESS_TOKEN=${META_ACCESS_TOKEN}"
+            echo "META_AD_ACCOUNT_ID=${META_AD_ACCOUNT_ID}"
+          } > .env
+
+      - name: Send daily report
+        run: python scripts/send_daily_report.py
