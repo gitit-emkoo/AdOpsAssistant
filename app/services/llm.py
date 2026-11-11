@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
@@ -12,7 +13,28 @@ SYSTEM_PROMPT = """당신은 광고 성과와 업무 리마인드를 돕는 한�
 앱 광고에서는 클릭과 설치(installs)를 구분해서 보세요. 클릭 대비 설치율, CPI를 우선 언급하세요.
 답변은 짧고 실행 가능하게: 요약 → 이상 징후 → 오늘 할 일 순으로 작성하세요.
 금액은 원 단위, 비율은 %로 표기하세요.
+
+중요: 마크다운을 쓰지 마세요.
+별표(**), 샵(#), 백틱(`), --- 구분선, HTML 태그를 넣지 마세요.
+일반 텍스트와 짧은 줄글(-)만 사용하세요.
 """
+
+
+def strip_markdown(text: str) -> str:
+    """메일/화면용으로 마크다운 장식을 제거합니다."""
+    cleaned = text or ""
+    cleaned = cleaned.replace("\r\n", "\n")
+    cleaned = re.sub(r"[ \t]*={3,}[ \t]*", "", cleaned)
+    cleaned = re.sub(r"[ \t]*-{3,}[ \t]*", "", cleaned)
+    cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
+    cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"__([^_]+)__", r"\1", cleaned)
+    cleaned = re.sub(r"(?<!\w)\*([^*\n]+)\*(?!\w)", r"\1", cleaned)
+    cleaned = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"\1", cleaned)
+    cleaned = re.sub(r"^#{1,6}\s*", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^\s*>\s?", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 # 일부 최신 모델은 일시 과부하(503)가 잦아서 폴백 체인을 둡니다.
 MODEL_FALLBACKS = (
@@ -110,7 +132,7 @@ def _call_gemini(question: str, context: dict[str, Any], settings: Settings) -> 
                     .get("text")
                 )
                 if text and text.strip():
-                    return text.strip()
+                    return strip_markdown(text)
                 errors.append(f"{model}: empty response")
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{model}: {exc}")
@@ -128,7 +150,7 @@ def generate_answer(
         return _rule_based_answer(question, context)
 
     try:
-        return _call_gemini(question, context, settings)
+        return strip_markdown(_call_gemini(question, context, settings))
     except Exception as exc:  # noqa: BLE001 — fallback for free-tier/network issues
         return (
             _rule_based_answer(question, context)
@@ -138,7 +160,17 @@ def generate_answer(
 
 def generate_daily_insights(context: dict[str, Any], settings: Settings | None = None) -> str:
     question = (
-        "어제 광고 성과를 요약하고, 이상 징후와 오늘 할 일 3가지를 제안해줘. "
-        "납부/세무 일정이 있으면 함께 리마인드해줘."
+        "어제 광고 성과를 아주 짧게 정리해줘. "
+        "형식은 아래처럼 평범한 텍스트만 써.\n"
+        "요약:\n"
+        "- ...\n"
+        "이상 징후:\n"
+        "- ...\n"
+        "오늘 할 일:\n"
+        "1. ...\n"
+        "2. ...\n"
+        "3. ...\n"
+        "납부/세무 일정이 있으면 마지막에 한두 줄로만 리마인드해줘. "
+        "별표나 제목 장식은 쓰지 마."
     )
     return generate_answer(question, context, settings)
