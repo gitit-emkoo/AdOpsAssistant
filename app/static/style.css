@@ -216,12 +216,17 @@ th, td {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #fff;
+  color: var(--ink);
   padding: 0.3rem;
   text-align: left;
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
   cursor: pointer;
+  font: inherit;
+}
+.cal-cell .cal-day {
+  color: var(--ink);
 }
 .cal-cell.empty {
   background: transparent;
