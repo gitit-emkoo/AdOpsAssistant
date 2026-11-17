@@ -1,9 +1,8 @@
 name: Daily Ad Report
 
+# 매일 메일은 Oracle VM cron 사용. Actions 자동 스케줄은 중지.
+# 필요하면 GitHub Actions 탭에서 수동(workflow_dispatch)만 실행.
 on:
-  schedule:
-    # 매주 월-금 00:10 UTC = 한국시간 09:10
-    - cron: "10 0 * * 1-5"
   workflow_dispatch:
 
 jobs:
