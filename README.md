@@ -60,7 +60,7 @@ Actions에서 `Daily Ad Report`를 수동 실행해 보세요.
 ### Meta 준비물
 
 - Marketing API Access Token
-- Ad Account ID (`act_...`)
+- Ad Account ID (`act_...`) — 여러 계정이면 쉼표로: `act_111,act_222`
 - 장기 토큰용 App ID / App Secret (`META_APP_ID`, `META_APP_SECRET`)
 
 짧은 토큰을 장기 토큰(약 60일)으로 바꾸려면:
@@ -71,9 +71,17 @@ Actions에서 `Daily Ad Report`를 수동 실행해 보세요.
 
 웹앱의 **토큰 안내** 모달에서도 교환할 수 있습니다. 만료 임박 시 상단 알림이 뜹니다.
 
+## 무료 상시 배포 (Oracle Always Free)
+
+프론트+백+SQLite를 VM 한 대에 그대로 올리는 초보용 가이드:
+
+→ [`docs/oracle-always-free-guide.md`](docs/oracle-always-free-guide.md)
+
+매일 메일은 같은 VM의 cron을 쓰면 웹에서 넣은 할 일과 DB가 맞습니다. (GitHub Actions와는 DB를 공유하지 않음)
+
 ## 다음 확장
 
 - 지출 CSV 업로드
 - 월별 세무/비용 보고서 메일
 - 카드/오픈뱅킹 연동 검토
-- Render/Fly.io 등에 웹앱 상시 배포
+- 도메인 + HTTPS (Cloudflare)

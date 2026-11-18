@@ -91,37 +91,8 @@ def debug_meta_token(settings: Settings | None = None) -> dict[str, Any]:
         return result
 
     if not settings.meta_app_id or not settings.meta_app_secret:
-        # App ID/Secret 없으면 실제 debug 불가. 저장된 만료일만 사용.
-        with get_conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM integration_status WHERE provider='meta'"
-            ).fetchone()
-        expires_at = row["expires_at"] if row else settings.meta_token_expires_at or None
-        days_left = _days_left(expires_at)
-        status, level, title, message = _classify(days_left, has_token=True)
-        # App ID/Secret 미설정은 연동 패널 안내만 하고, 상단 경고로 띄우지 않음
-        if status in {"ok", "unknown"}:
-            status = "ok"
-            level = "ok"
-            title = "Meta 토큰 연결됨"
-            message = (
-                "토큰이 설정되어 있습니다. "
-                "만료일 확인/장기 토큰 교환은 토큰 안내에서 App ID·Secret 설정 후 가능합니다."
-            )
-        result = {
-            "provider": "meta",
-            "configured": True,
-            "status": status,
-            "level": level,
-            "title": title,
-            "message": message,
-            "expires_at": expires_at,
-            "days_left": days_left,
-            "token_type": (row["token_type"] if row else None) or "unknown",
-            "can_extend": False,
-            "needs_app_credentials": True,
-        }
-        return result
+        # App ID/Secret 없어도 토큰 자체 유효성은 Graph 호출로 확인
+        return _probe_meta_token_without_app(settings)
 
     app_token = f"{settings.meta_app_id}|{settings.meta_app_secret}"
     try:
@@ -238,8 +209,19 @@ def extend_meta_token(short_token: str | None = None) -> dict[str, Any]:
             )
             data = resp.json()
             if resp.status_code >= 400 or "access_token" not in data:
-                err = data.get("error", {}).get("message") or data
-                return {"ok": False, "error": str(err)[:400]}
+                err = str(data.get("error", {}).get("message") or data)[:400]
+                lower = err.lower()
+                if "expired" in lower or "session has expired" in lower:
+                    return {
+                        "ok": False,
+                        "error": (
+                            "지금 .env에 있는 토큰이 이미 만료돼서 교환할 수 없습니다. "
+                            "Graph API Explorer에서 새 짧은 토큰을 받은 뒤, "
+                            "입력칸에 붙여넣고 다시 '장기 토큰으로 교환'을 눌러주세요."
+                        ),
+                        "raw_error": err,
+                    }
+                return {"ok": False, "error": err}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)[:400]}
 
@@ -321,14 +303,136 @@ def token_guide() -> dict[str, Any]:
             "더 오래 쓰려면 나중에 Business Manager 시스템 사용자 토큰으로 업그레이드",
         ],
         "google": [
-            "Google Ads Refresh Token은 보통 오래 유지됩니다",
-            "권한 오류 시 scripts/google_ads_oauth.py 를 다시 실행하세요",
+            "Google 쪽 오류는 Meta 장기토큰과 무관합니다. Refresh Token을 다시 발급하세요.",
+            "로컬에서 scripts/google_ads_oauth.py 를 실행해 Google 로그인·동의를 완료하세요.",
+            "발급된 GOOGLE_ADS_REFRESH_TOKEN 을 로컬 .env와 Oracle 서버 .env에 넣으세요.",
+            "웹에서 'API 새로고침' 또는 진행 중 광고 '새로고침'을 누르세요.",
+            "참고: 비밀번호를 바꾸거나 동의를 취소하면 refresh token이 즉시 무효가 됩니다.",
         ],
         "links": {
             "graph_explorer": "https://developers.facebook.com/tools/explorer/",
             "meta_apps": "https://developers.facebook.com/apps/",
         },
     }
+
+
+def _probe_meta_token_without_app(settings: Settings) -> dict[str, Any]:
+    """App 자격증명 없이 토큰이 실제로 살아 있는지 확인합니다."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM integration_status WHERE provider='meta'"
+        ).fetchone()
+    expires_at = (row["expires_at"] if row else None) or settings.meta_token_expires_at or None
+    days_left = _days_left(expires_at)
+    accounts = list(settings.meta_ad_account_ids)
+    account = accounts[0] if accounts else ""
+
+    try:
+        with httpx.Client(timeout=20) as client:
+            target = account or "me"
+            fields = "id,name" if account else "id,name"
+            resp = client.get(
+                f"https://graph.facebook.com/{settings.meta_api_version}/{target}",
+                params={
+                    "fields": fields,
+                    "access_token": settings.meta_access_token,
+                },
+            )
+            data = resp.json()
+            err = data.get("error") or {}
+            message = str(err.get("message") or "")
+            if resp.status_code >= 400 or err:
+                expired_like = any(
+                    key in message.lower()
+                    for key in ("expired", "session has expired", "validating access token")
+                ) or err.get("code") in {190, 102}
+                if expired_like:
+                    result = {
+                        "provider": "meta",
+                        "configured": True,
+                        "status": "expired",
+                        "level": "danger",
+                        "title": "Meta 토큰 만료",
+                        "message": "토큰이 만료됐습니다. Graph API Explorer에서 새 토큰을 받아 장기 토큰으로 교환하세요.",
+                        "expires_at": expires_at,
+                        "days_left": 0,
+                        "token_type": "invalid",
+                        "can_extend": False,
+                        "needs_app_credentials": True,
+                    }
+                    _save_status(
+                        "meta",
+                        "expired",
+                        expires_at=expires_at,
+                        token_type="invalid",
+                        message=result["message"],
+                    )
+                    return result
+                result = {
+                    "provider": "meta",
+                    "configured": True,
+                    "status": "error",
+                    "level": "danger",
+                    "title": "Meta 토큰 확인 실패",
+                    "message": message[:300] or f"HTTP {resp.status_code}",
+                    "expires_at": expires_at,
+                    "days_left": days_left,
+                    "token_type": (row["token_type"] if row else None) or "unknown",
+                    "can_extend": False,
+                    "needs_app_credentials": True,
+                }
+                _save_status("meta", "error", expires_at=expires_at, message=result["message"])
+                return result
+    except Exception as exc:  # noqa: BLE001
+        result = {
+            "provider": "meta",
+            "configured": True,
+            "status": "error",
+            "level": "danger",
+            "title": "Meta 토큰 확인 실패",
+            "message": str(exc)[:300],
+            "expires_at": expires_at,
+            "days_left": days_left,
+            "token_type": (row["token_type"] if row else None) or "unknown",
+            "can_extend": False,
+            "needs_app_credentials": True,
+        }
+        _save_status("meta", "error", expires_at=expires_at, message=result["message"])
+        return result
+
+    # 토큰은 유효. 만료일 정확 확인은 App ID/Secret 필요 → 노란불
+    if days_left is not None and days_left <= 0:
+        status, level, title, message = _classify(days_left, has_token=True)
+    elif days_left is not None:
+        status, level, title, message = _classify(days_left, has_token=True)
+    else:
+        status, level, title, message = (
+            "ok",
+            "warn",
+            "Meta 토큰 유효(만료일 미확인)",
+            "토큰은 살아 있습니다. 정확한 만료일/장기교환은 App ID·Secret 설정 후 가능합니다.",
+        )
+    result = {
+        "provider": "meta",
+        "configured": True,
+        "status": status,
+        "level": level,
+        "title": title,
+        "message": message,
+        "expires_at": expires_at,
+        "days_left": days_left,
+        "token_type": (row["token_type"] if row else None) or "unknown",
+        "can_extend": False,
+        "needs_app_credentials": True,
+    }
+    _save_status(
+        "meta",
+        status,
+        expires_at=expires_at,
+        token_type=result["token_type"],
+        message=message,
+    )
+    return result
 
 
 def _days_left(expires_at: str | None) -> int | None:
@@ -338,8 +442,11 @@ def _days_left(expires_at: str | None) -> int | None:
         dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        delta = dt - datetime.now(timezone.utc)
-        return max(0, delta.days)
+        secs = (dt - datetime.now(timezone.utc)).total_seconds()
+        if secs <= 0:
+            return 0
+        # 하루 미만 남아도 아직 유효하면 최소 1일로 표시
+        return max(1, int((secs + 86399) // 86400))
     except ValueError:
         return None
 
@@ -358,12 +465,13 @@ def _classify(
         return "unknown", "warn", "Meta 토큰 만료일 미확인", "App ID/Secret을 넣으면 만료일을 정확히 확인할 수 있습니다."
     if days_left <= 0:
         return "expired", "danger", "Meta 토큰 만료", "새 토큰을 발급하거나 장기 토큰으로 교환하세요."
-    if days_left <= 7:
+    if token_type == "short" or days_left <= 7:
+        label = "오늘 중" if days_left <= 1 else f"약 {days_left}일 후"
         return (
             "expiring_soon",
             "warn",
-            f"Meta 토큰 {days_left}일 후 만료",
-            "곧 만료됩니다. 장기 토큰으로 다시 교환하세요.",
+            f"Meta 짧은 토큰 {label} 만료" if token_type == "short" else f"Meta 토큰 {label} 만료",
+            "아직 유효합니다. 지금 장기 토큰으로 교환하세요.",
         )
     return (
         "ok",

@@ -98,14 +98,15 @@ def calendar_month(year: int | None = None, month: int | None = None) -> dict[st
     start_pad = first.weekday()  # Monday-start grid
 
     with get_conn() as conn:
+        # 일회성: 완료(done)도 달력에 남겨 두고 취소선으로 표시
         one_time = conn.execute(
             """
             SELECT * FROM tasks
-            WHERE status = 'open'
-              AND COALESCE(recurrence, 'none') = 'none'
+            WHERE COALESCE(recurrence, 'none') = 'none'
               AND due_date IS NOT NULL
               AND due_date >= ?
               AND due_date <= ?
+              AND status IN ('open', 'done')
             ORDER BY due_date ASC, id ASC
             """,
             (first.isoformat(), last.isoformat()),
@@ -125,7 +126,7 @@ def calendar_month(year: int | None = None, month: int | None = None) -> dict[st
             item = dict(row)
             item["occurrence_date"] = item["due_date"]
             item["is_recurring"] = False
-            item["completed"] = False
+            item["completed"] = (item.get("status") or "") == "done"
             events.append(item)
 
         recurring_dicts = [dict(r) for r in recurring]
@@ -178,6 +179,77 @@ def calendar_month(year: int | None = None, month: int | None = None) -> dict[st
         "prev": {"year": prev_year, "month": prev_month},
         "next": {"year": next_year, "month": next_month},
     }
+
+
+def get_task(task_id: int) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_task(
+    task_id: int,
+    *,
+    title: str | None = None,
+    category: str | None = None,
+    due_date: str | None = None,
+    amount: float | None = None,
+    notes: str | None = None,
+    recurrence: str | None = None,
+    recur_day: int | None = None,
+) -> dict[str, Any] | None:
+    existing = get_task(task_id)
+    if not existing:
+        return None
+
+    new_title = title if title is not None else existing["title"]
+    new_category = category if category is not None else existing["category"]
+    new_amount = amount if amount is not None else existing.get("amount")
+    new_notes = notes if notes is not None else existing.get("notes")
+    new_recurrence = (recurrence if recurrence is not None else existing.get("recurrence") or "none").lower()
+
+    if new_recurrence not in {"none", "monthly"}:
+        raise ValueError("recurrence must be none or monthly")
+
+    if new_recurrence == "monthly":
+        day = recur_day if recur_day is not None else existing.get("recur_day")
+        if not day or not (1 <= int(day) <= 31):
+            raise ValueError("monthly 반복은 recur_day(1-31)가 필요합니다.")
+        new_due_date = None
+        new_recur_day = int(day)
+    else:
+        new_due_date = due_date if due_date is not None else existing.get("due_date")
+        new_recur_day = None
+
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE tasks
+            SET title = ?, category = ?, due_date = ?, amount = ?, notes = ?,
+                recurrence = ?, recur_day = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                new_title,
+                new_category,
+                new_due_date,
+                new_amount,
+                new_notes,
+                new_recurrence,
+                new_recur_day,
+                now_iso(),
+                task_id,
+            ),
+        )
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def delete_task(task_id: int) -> bool:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM task_completions WHERE task_id = ?", (task_id,))
+        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        return cur.rowcount > 0
 
 
 def complete_task(task_id: int, occurrence_date: str | None = None) -> dict[str, Any] | None:

@@ -35,8 +35,15 @@ def collect_platform_metrics(
     platform: str,
     metric_date: date | None = None,
     settings: Settings | None = None,
+    user_id: int | None = None,
 ) -> AdMetrics:
-    settings = settings or get_settings()
+    if settings is None:
+        if user_id is not None:
+            from app.services.connections import settings_for_user
+
+            settings = settings_for_user(user_id)
+        else:
+            settings = get_settings()
     day = (metric_date or date.today() - timedelta(days=1)).isoformat()
 
     if settings.demo_mode:
@@ -88,14 +95,33 @@ def save_metrics(metrics: AdMetrics) -> None:
         )
 
 
-def collect_all_metrics(metric_date: date | None = None) -> list[AdMetrics]:
-    results = [
-        collect_platform_metrics("google_ads", metric_date),
-        collect_platform_metrics("meta", metric_date),
-    ]
-    for item in results:
-        save_metrics(item)
-    return results
+class CollectResult(list):
+    """list처럼 쓰되, 실패한 채널 메시지를 errors에 담습니다."""
+
+    errors: list[str]
+
+    def __init__(self, items: list[AdMetrics] | None = None, errors: list[str] | None = None):
+        super().__init__(items or [])
+        self.errors = list(errors or [])
+
+
+def collect_all_metrics(
+    metric_date: date | None = None,
+    user_id: int | None = None,
+) -> CollectResult:
+    """플랫폼별 수집. 한쪽 실패해도 다른 쪽 결과는 저장합니다."""
+    results: list[AdMetrics] = []
+    errors: list[str] = []
+    for platform in ("google_ads", "meta"):
+        try:
+            item = collect_platform_metrics(
+                platform, metric_date, user_id=user_id
+            )
+            save_metrics(item)
+            results.append(item)
+        except Exception as exc:  # noqa: BLE001 — 채널 독립 수집
+            errors.append(f"{platform}: {exc}")
+    return CollectResult(results, errors)
 
 
 def get_recent_metrics(days: int = 7) -> list[dict[str, Any]]:
@@ -122,6 +148,61 @@ def get_metrics_by_date(metric_date: str) -> list[dict[str, Any]]:
             (metric_date,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_metrics_between(start_date: str, end_date: str) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM metric_snapshots
+            WHERE metric_date >= ?
+              AND metric_date <= ?
+            ORDER BY metric_date ASC, platform ASC
+            """,
+            (start_date, end_date),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def collect_metrics_range(
+    start: date,
+    end: date,
+    *,
+    fill_missing_only: bool = True,
+    user_id: int | None = None,
+    platforms: tuple[str, ...] = ("google_ads", "meta"),
+) -> CollectResult:
+    """기간 성과를 일별로 수집. 기본은 플랫폼별로 DB에 없는 날짜만 채웁니다."""
+    if end < start:
+        start, end = end, start
+    # 한 번에 너무 많이 치지 않도록 최대 31일
+    if (end - start).days > 30:
+        start = end - timedelta(days=30)
+
+    existing: set[tuple[str, str]] = set()
+    if fill_missing_only:
+        for row in get_metrics_between(start.isoformat(), end.isoformat()):
+            existing.add((str(row.get("metric_date")), str(row.get("platform"))))
+
+    results: list[AdMetrics] = []
+    errors: list[str] = []
+    cursor = start
+    while cursor <= end:
+        day = cursor.isoformat()
+        day_date = date.fromisoformat(day)
+        cursor += timedelta(days=1)
+        for platform in platforms:
+            if fill_missing_only and (day, platform) in existing:
+                continue
+            try:
+                item = collect_platform_metrics(
+                    platform, day_date, user_id=user_id
+                )
+                save_metrics(item)
+                results.append(item)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{day} {platform}: {exc}")
+    return CollectResult(results, errors)
 
 
 def enrich_metrics_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

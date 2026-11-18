@@ -10,6 +10,7 @@ from app.config import Settings, get_settings
 
 SYSTEM_PROMPT = """당신은 광고 성과와 업무 리마인드를 돕는 한국어 AI 비서입니다.
 주어진 숫자/일정 데이터만 근거로 답하세요. 없는 수치는 추측하지 마세요.
+컨텍스트에 period(조회 기간)가 있으면 그 기간을 먼저 밝히고, 해당 기간 metrics만 사용하세요.
 앱 광고에서는 클릭과 설치(installs)를 구분해서 보세요. 클릭 대비 설치율, CPI를 우선 언급하세요.
 답변은 짧고 실행 가능하게: 요약 → 이상 징후 → 오늘 할 일 순으로 작성하세요.
 금액은 원 단위, 비율은 %로 표기하세요.
@@ -188,5 +189,23 @@ def generate_daily_insights(context: dict[str, Any], settings: Settings | None =
         "3. ...\n"
         "납부/세무 일정이 있으면 마지막에 한두 줄로만 리마인드해줘. "
         "별표나 제목 장식은 쓰지 마."
+    )
+    return generate_answer(question, context, settings)
+
+
+def generate_monthly_insights(context: dict[str, Any], settings: Settings | None = None) -> str:
+    label = context.get("year_month") or "해당 월"
+    question = (
+        f"{label} 월간 광고 성과를 짧게 정리해줘. "
+        "형식은 아래처럼 평범한 텍스트만 써.\n"
+        "월간 요약:\n"
+        "- ...\n"
+        "채널별 포인트:\n"
+        "- ...\n"
+        "개선 제안:\n"
+        "1. ...\n"
+        "2. ...\n"
+        "3. ...\n"
+        "숫자(지출·클릭·설치·CPI)를 한두 개만 짚고, 별표나 제목 장식은 쓰지 마."
     )
     return generate_answer(question, context, settings)

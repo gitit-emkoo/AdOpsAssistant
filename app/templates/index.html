@@ -4,15 +4,21 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{ app_name }}</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+  <link rel="stylesheet" href="/static/style.css?v=20261118oauth" />
 </head>
 <body>
   <header class="top">
     <div>
-      <p class="eyebrow">모바일 질의 · 매일 메일 리포트</p>
+      <p class="eyebrow">모바일 질의 · 매일 메일 리포트{% if user %} · {{ user.email }}{% endif %}</p>
       <h1>{{ app_name }}</h1>
     </div>
     <div class="status-lights" title="연동 상태">
+      <a class="light-item" href="/reports" style="text-decoration:none;color:inherit">리포트</a>
+      <a class="light-item" href="/connections" style="text-decoration:none;color:inherit">광고 연동</a>
+      <form method="post" action="/logout" style="margin:0">
+        <button type="submit" class="light-item">로그아웃</button>
+      </form>
       <button type="button" class="light-item" id="openTokenGuide" aria-label="토큰 안내">
         <span class="light {% if demo_mode %}amber{% else %}green{% endif %}"></span>
         <span>LIVE</span>
@@ -53,6 +59,96 @@
   </div>
   {% endif %}
 
+  <section class="active-ads" id="activeAdsBoard"
+           data-metric-date="{{ active_ads.metric_date if active_ads else '' }}">
+    <div class="panel-head">
+      <div>
+        <h2>진행 중 광고</h2>
+        <p class="muted" id="activeAdsHint">
+          {% if active_ads %}
+            성과 기준일 {{ active_ads.metric_date }}
+            {% if active_ads.source == 'cache' %} · 캐시{% endif %}
+            · 캠페인 클릭 시 광고세트
+          {% else %}
+            진행 중 캠페인을 불러오는 중
+          {% endif %}
+        </p>
+      </div>
+      <button type="button" class="ghost" id="activeAdsRefresh">새로고침</button>
+    </div>
+    <div class="table-wrap" id="activeAdsList">
+      {% if active_ads and active_ads['items'] %}
+      <table class="active-ads-table">
+        <thead>
+          <tr>
+            <th>채널</th>
+            <th>계정</th>
+            <th>광고 이름</th>
+            <th>광고기간</th>
+            <th class="num">지출</th>
+            <th class="num">클릭</th>
+            <th class="num">설치</th>
+            <th class="num">설치율</th>
+            <th class="num">CPI</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ad in active_ads['items'] %}
+          <tr class="campaign-row"
+              data-platform="{{ ad.platform }}"
+              data-campaign-id="{{ ad.campaign_id }}"
+              data-account-id="{{ ad.account_id or '' }}"
+              tabindex="0"
+              role="button"
+              title="클릭하면 광고세트 보기">
+            <td>{% if ad.platform == 'google_ads' %}<span class="platform-badge google">Google</span>{% else %}<span class="platform-badge meta">Meta</span>{% endif %}</td>
+            <td class="account-cell">{{ ad.account_name or ad.account_id or '-' }}</td>
+            <td class="name-cell"><span class="expand-caret">▸</span> {{ ad.name }}</td>
+            <td class="period-cell">
+              {% if ad.start_date %}{{ ad.start_date }}{% else %}?{% endif %}
+              ~
+              {% if ad.end_date %}{{ ad.end_date }}{% else %}진행중{% endif %}
+            </td>
+            <td class="num">{{ '{:,.0f}'.format(ad.spend) }}</td>
+            <td class="num">{{ ad.clicks }}</td>
+            <td class="num">{{ '{:,.0f}'.format(ad.installs) }}</td>
+            <td class="num">{% if ad.clicks %}{{ '%.1f'|format(ad.install_rate) }}%{% else %}-{% endif %}</td>
+            <td class="num">{% if ad.installs %}{{ '{:,.0f}'.format(ad.cpi) }}{% else %}-{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        <p class="muted" id="activeAdsEmpty">진행 중 광고가 없거나, 연동/토큰을 확인해 주세요.</p>
+      {% endif %}
+    </div>
+    {% if active_ads and active_ads['errors'] %}
+    <div class="active-ads-error" id="activeAdsErrors">
+      {% set ns = namespace(has_meta=false, has_google=false) %}
+      {% for err in active_ads['errors'] %}
+        {% set low = err|lower %}
+        {% if 'google' in low or 'oauth2.googleapis.com' in low %}
+          {% set ns.has_google = true %}
+          <p class="hint-error">Google Ads 연동 오류: Refresh Token이 만료·폐기됐을 수 있습니다. google_ads_oauth.py로 다시 발급하세요.</p>
+        {% elif 'Session has expired' in err or 'access token' in low or 'oauthexception' in low or 'meta' in low %}
+          {% set ns.has_meta = true %}
+          <p class="hint-error">Meta 토큰이 만료되어 Meta 캠페인을 못 불러왔습니다.</p>
+        {% else %}
+          <p class="hint-error">{{ err[:180] }}</p>
+        {% endif %}
+      {% endfor %}
+      <div class="active-ads-error-actions">
+        {% if ns.has_meta %}
+          <button type="button" class="ghost btn-sm open-guide" data-focus="meta">Meta 장기 토큰으로 교환</button>
+        {% endif %}
+        {% if ns.has_google %}
+          <button type="button" class="ghost btn-sm open-guide" data-focus="google">Google 해결 방법</button>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+  </section>
+
   <main class="layout">
     <section class="panel chat-panel">
       <div class="panel-head">
@@ -70,7 +166,7 @@
         </div>
         {% else %}
         <div class="bubble assistant">
-          <div class="content">예: “어제 메타 ROAS 어때?”, “이번 주 납부 일정 알려줘”</div>
+          <div class="content">예: “이번주 광고 성과 알려줘”, “지난달 구글 CPI”, “2026-11-01~2026-11-10 메타 지출”</div>
         </div>
         {% endfor %}
       </div>
@@ -81,54 +177,110 @@
     </section>
 
     <section class="side">
-      <article class="panel">
+      <article class="panel metrics-panel">
         <div class="panel-head">
-          <h2>최근 성과</h2>
-          <button id="refreshBtn" type="button" class="ghost">API 새로고침</button>
+          <div>
+            <h2>최근 성과</h2>
+            <p class="muted panel-sub" id="metricsHint">최근 3일 기준 · 일별·기간으로 바꿀 수 있습니다</p>
+          </div>
+          <button id="refreshBtn" type="button" class="ghost btn-sm">API 새로고침</button>
         </div>
-        <div class="date-row">
-          <label for="metricDate">조회 날짜</label>
-          <input type="date" id="metricDate" value="{{ selected_metric_date }}" max="{{ selected_metric_date }}" />
-          <button type="button" class="ghost" id="loadDateBtn">조회</button>
+
+        <div class="metrics-toolbar">
+          <div class="segment" id="metricsModes" role="tablist" aria-label="조회 범위">
+            <button type="button" class="mode-btn is-active" data-mode="recent" role="tab" aria-selected="true">최근 3일</button>
+            <button type="button" class="mode-btn" data-mode="day" role="tab" aria-selected="false">일별</button>
+            <button type="button" class="mode-btn" data-mode="range" role="tab" aria-selected="false">기간</button>
+          </div>
+          <div class="metrics-filters">
+            <div class="date-row" id="metricsDayRow" hidden>
+              <label for="metricDate">날짜</label>
+              <input type="date" id="metricDate" value="{{ selected_metric_date }}" max="{{ selected_metric_date }}" />
+              <button type="button" class="ghost btn-sm" id="loadDateBtn">조회</button>
+            </div>
+            <div class="date-row" id="metricsRangeRow" hidden>
+              <label for="metricStart">시작</label>
+              <input type="date" id="metricStart" value="{{ metrics_start }}" max="{{ selected_metric_date }}" />
+              <span class="range-sep">–</span>
+              <label for="metricEnd">끝</label>
+              <input type="date" id="metricEnd" value="{{ metrics_end }}" max="{{ selected_metric_date }}" />
+              <button type="button" class="ghost btn-sm" id="loadRangeBtn">조회</button>
+            </div>
+          </div>
         </div>
-        <p class="muted" id="metricsHint">날짜를 고르면 해당일 Google/Meta 성과를 보여줍니다.</p>
+
+        <div class="kpi-strip" id="metricsKpis">
+          <div class="kpi">
+            <span class="kpi-label">지출</span>
+            <strong id="kpiSpend">{{ '{:,.0f}'.format(metrics_kpi.spend) }}</strong>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">클릭</span>
+            <strong id="kpiClicks">{{ '{:,.0f}'.format(metrics_kpi.clicks) }}</strong>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">설치</span>
+            <strong id="kpiInstalls">{{ '{:,.0f}'.format(metrics_kpi.installs) }}</strong>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">평균 CPI</span>
+            <strong id="kpiCpi">
+              {% if metrics_kpi.cpi %}{{ '{:,.0f}'.format(metrics_kpi.cpi) }}{% else %}—{% endif %}
+            </strong>
+          </div>
+        </div>
+
         <div class="table-wrap">
-          <table>
+          <table class="data-table">
             <thead>
               <tr>
-                <th>채널</th><th>일자</th><th>지출</th><th>클릭</th><th>설치</th><th>설치율</th><th>CPI</th>
+                <th>채널</th>
+                <th>일자</th>
+                <th class="num">지출</th>
+                <th class="num">클릭</th>
+                <th class="num">설치</th>
+                <th class="num">설치율</th>
+                <th class="num">CPI</th>
               </tr>
             </thead>
             <tbody id="metricsBody">
               {% for m in metrics %}
               <tr>
-                <td>{{ m.platform }}</td>
-                <td>{{ m.metric_date }}</td>
-                <td>{{ '{:,.0f}'.format(m.spend) }}</td>
-                <td>{{ m.clicks }}</td>
-                <td>{{ '{:,.0f}'.format(m.installs or 0) }}</td>
                 <td>
+                  {% if m.platform == 'google_ads' %}
+                    <span class="platform-badge google">Google</span>
+                  {% elif m.platform == 'meta' %}
+                    <span class="platform-badge meta">Meta</span>
+                  {% else %}
+                    <span class="platform-badge">{{ m.platform }}</span>
+                  {% endif %}
+                </td>
+                <td class="date-cell">{{ m.metric_date }}</td>
+                <td class="num">{{ '{:,.0f}'.format(m.spend) }}</td>
+                <td class="num">{{ m.clicks }}</td>
+                <td class="num">{{ '{:,.0f}'.format(m.installs or 0) }}</td>
+                <td class="num">
                   {% if m.install_rate is defined %}
                     {{ '{:.1f}'.format(m.install_rate) }}%
                   {% elif m.clicks %}
                     {{ '{:.1f}'.format(((m.installs or 0) / m.clicks) * 100) }}%
                   {% else %}
-                    -
+                    —
                   {% endif %}
                 </td>
-                <td>
+                <td class="num">
                   {% if m.cpi is defined and m.cpi %}
                     {{ '{:,.0f}'.format(m.cpi) }}
                   {% elif (m.installs or 0) and m.spend %}
                     {{ '{:,.0f}'.format(m.spend / m.installs) }}
                   {% else %}
-                    -
+                    —
                   {% endif %}
                 </td>
               </tr>
               {% else %}
               <tr>
-                <td colspan="7" class="muted">선택한 날짜 데이터가 없습니다. API 새로고침을 눌러보세요.</td>
+                <td colspan="7" class="empty-row">선택한 날짜 데이터가 없습니다. 새로고침을 눌러보세요.</td>
               </tr>
               {% endfor %}
             </tbody>
@@ -140,9 +292,9 @@
         <div class="panel-head">
           <h2>할 일 달력</h2>
           <div class="cal-nav">
-            <button type="button" class="ghost" id="calPrev">‹</button>
+            <button type="button" class="icon-btn" id="calPrev" aria-label="이전 달"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg></button>
             <strong id="calLabel">{{ task_calendar.label }}</strong>
-            <button type="button" class="ghost" id="calNext">›</button>
+            <button type="button" class="icon-btn" id="calNext" aria-label="다음 달"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg></button>
           </div>
         </div>
         <div class="calendar" id="taskCalendar"
@@ -159,7 +311,7 @@
                       data-date="{{ cell.date }}">
                 <span class="cal-day">{{ cell.day }}</span>
                 {% for ev in cell.events[:2] %}
-                <span class="cal-chip {% if ev.completed %}done{% endif %} {% if ev.is_recurring %}recur{% endif %}">{{ ev.title }}</span>
+                <span class="cal-chip cat-{{ ev.category or 'general' }} {% if ev.completed %}done{% endif %} {% if ev.is_recurring %}recur{% endif %}">{{ ev.title }}</span>
                 {% endfor %}
                 {% if cell.events|length > 2 %}
                 <span class="cal-more">+{{ cell.events|length - 2 }}</span>
@@ -177,13 +329,14 @@
             <li class="muted">달력에서 날짜를 누르면 할 일이 표시됩니다.</li>
           </ul>
         </div>
-        <form method="post" action="/ui/tasks" class="mini-form" id="taskForm">
-          <input name="title" placeholder="할 일 (예: 보험료 납부)" required />
-          <select name="category">
-            <option value="finance">finance</option>
-            <option value="tax">tax</option>
-            <option value="ads">ads</option>
-            <option value="general">general</option>
+        <form class="mini-form" id="taskForm">
+          <input type="hidden" id="taskEditId" value="" />
+          <input name="title" id="taskTitle" placeholder="할 일 (예: 보험료 납부)" required />
+          <select name="category" id="taskCategory">
+            <option value="finance">재무</option>
+            <option value="tax">세무</option>
+            <option value="ads">광고</option>
+            <option value="general">일반</option>
           </select>
           <label class="check-row">
             <input type="checkbox" id="monthlyToggle" />
@@ -196,7 +349,10 @@
           <div id="monthlyFields" hidden>
             <input name="recur_day" id="taskRecurDay" type="number" min="1" max="31" placeholder="매달 며칠? (예: 10)" />
           </div>
-          <button type="submit">추가</button>
+          <div class="form-actions">
+            <button type="submit" id="taskSubmitBtn">추가</button>
+            <button type="button" class="ghost" id="taskCancelEdit" hidden>수정 취소</button>
+          </div>
         </form>
       </article>
 
@@ -224,7 +380,7 @@
       </div>
 
       <div class="modal-body">
-        <section>
+        <section id="guide-meta">
           <h3>1) 짧은 Meta 토큰 받기</h3>
           <ol>
             {% for step in integrations.guide.meta_short %}
@@ -257,17 +413,25 @@
           </p>
         </section>
 
-        <section>
+        <section class="token-exchange">
           <h3>3) 지금 교환하기</h3>
-          <p class="muted">Graph Explorer에서 받은 짧은 토큰을 붙여넣거나, 비워두면 현재 .env 토큰을 교환합니다.</p>
-          <textarea id="shortTokenInput" rows="3" placeholder="짧은 Meta 액세스 토큰 (선택)"></textarea>
+          <div class="token-callout">
+            <strong>만료된 토큰은 교환이 안 됩니다</strong>
+            <p>1) Graph API Explorer에서 <em>새 짧은 토큰</em>을 받습니다.</p>
+            <p>2) 그 토큰을 아래 칸에 붙여넣습니다.</p>
+            <p>3) <em>장기 토큰으로 교환</em>을 누릅니다.</p>
+            <p class="muted" style="margin-top:0.45rem">토큰이 아직 유효하고 .env에만 넣어 둔 경우에만, 칸을 비우고 눌러도 됩니다.</p>
+          </div>
+          <label class="muted" for="shortTokenInput">새 짧은 토큰 붙여넣기</label>
+          <textarea id="shortTokenInput" rows="3" placeholder="여기에 Graph Explorer에서 방금 받은 짧은 토큰을 붙여넣으세요"></textarea>
           <div class="modal-actions">
             <button type="button" id="extendTokenBtn">장기 토큰으로 교환</button>
           </div>
+          <p class="muted">성공하면 .env의 META_ACCESS_TOKEN이 장기 토큰으로 자동 저장됩니다. (보통 약 60일)</p>
           <p class="status-line" id="extendResult"></p>
         </section>
 
-        <section>
+        <section id="guide-google">
           <h3>Google Ads</h3>
           <ol>
             {% for step in integrations.guide.google %}
@@ -279,6 +443,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20261118oauth"></script>
 </body>
 </html>

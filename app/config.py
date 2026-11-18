@@ -9,7 +9,8 @@ DATA_DIR = ROOT_DIR / "data"
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Absolute path so cron/systemd work even when cwd is not the app root.
+        env_file=str(ROOT_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -38,6 +39,7 @@ class Settings(BaseSettings):
     google_ads_login_customer_id: str = ""
 
     meta_access_token: str = ""
+    # 쉼표/공백으로 여러 계정: act_111,act_222
     meta_ad_account_id: str = ""
     meta_api_version: str = "v21.0"
     meta_app_id: str = ""
@@ -47,6 +49,22 @@ class Settings(BaseSettings):
     @property
     def email_recipients(self) -> list[str]:
         return [e.strip() for e in self.email_to.split(",") if e.strip()]
+
+    @property
+    def meta_ad_account_ids(self) -> list[str]:
+        raw = (self.meta_ad_account_id or "").replace(";", ",")
+        ids: list[str] = []
+        seen: set[str] = set()
+        for part in raw.split(","):
+            value = part.strip()
+            if not value:
+                continue
+            if not value.startswith("act_"):
+                value = f"act_{value}"
+            if value not in seen:
+                seen.add(value)
+                ids.append(value)
+        return ids
 
     @property
     def google_ads_configured(self) -> bool:
@@ -61,7 +79,7 @@ class Settings(BaseSettings):
 
     @property
     def meta_configured(self) -> bool:
-        return bool(self.meta_access_token and self.meta_ad_account_id)
+        return bool(self.meta_access_token and self.meta_ad_account_ids)
 
     @property
     def meta_app_credentials_ready(self) -> bool:

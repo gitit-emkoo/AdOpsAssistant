@@ -115,10 +115,28 @@ def main() -> int:
         print(json.dumps({k: ("***" if "token" in k else v) for k, v in data.items()}, ensure_ascii=False))
         return 1
 
-    print("\n성공. 아래 값을 .env의 GOOGLE_ADS_REFRESH_TOKEN 에 넣으세요.\n")
-    print(refresh)
-    print("\n다음은 Developer Token + Customer ID 입력 후:")
-    print("  .\\.venv\\Scripts\\python.exe scripts\\test_ads_connection.py")
+    env_path = ROOT / ".env"
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+        key = "GOOGLE_ADS_REFRESH_TOKEN="
+        replaced = False
+        out: list[str] = []
+        for line in lines:
+            if line.startswith(key):
+                out.append(f"{key}{refresh}")
+                replaced = True
+            else:
+                out.append(line)
+        if not replaced:
+            out.append(f"{key}{refresh}")
+        env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+        print("\n성공. .env의 GOOGLE_ADS_REFRESH_TOKEN 을 자동 갱신했습니다.")
+    else:
+        print("\n성공. 아래 값을 .env의 GOOGLE_ADS_REFRESH_TOKEN 에 넣으세요.\n")
+        print(refresh)
+
+    print("Oracle 서버에도 같은 토큰을 반영해야 합니다.")
+    print("그다음 웹에서 API/진행 중 광고 새로고침을 누르세요.")
     return 0
 
 

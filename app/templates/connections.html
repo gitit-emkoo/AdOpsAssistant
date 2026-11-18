@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>광고 연동 · {{ app_name }}</title>
+  <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+  <link rel="stylesheet" href="/static/style.css?v=20261118meta-names" />
+</head>
+<body>
+  <header class="top">
+    <div>
+      <p class="eyebrow">{{ user.email }}</p>
+      <h1>광고 계정 연동</h1>
+      <p class="muted">성과 조회용 읽기 권한만 요청합니다. 광고를 수정하지 않습니다.</p>
+    </div>
+    <div class="status-lights">
+      <a class="ghost btn-sm" href="/" style="text-decoration:none;display:inline-flex;align-items:center">대시보드</a>
+      <a class="ghost btn-sm" href="/reports" style="text-decoration:none;display:inline-flex;align-items:center">리포트</a>
+      <form method="post" action="/logout" style="margin:0">
+        <button type="submit" class="ghost btn-sm">로그아웃</button>
+      </form>
+    </div>
+  </header>
+
+  {% if flash %}
+  <div class="alerts">
+    <div class="alert {{ flash_level or 'ok' }}">
+      <div><strong>{{ flash }}</strong></div>
+    </div>
+  </div>
+  {% endif %}
+
+  <main class="layout" style="grid-template-columns:1fr 1fr">
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Meta</h2>
+        {% if status.meta.connected %}
+          <span class="platform-badge meta">연결됨</span>
+        {% elif status.meta.status == 'pending_select' %}
+          <span class="platform-badge">계정 선택 필요</span>
+        {% elif status.meta.env_fallback %}
+          <span class="platform-badge">.env 사용 중</span>
+        {% else %}
+          <span class="platform-badge">미연결</span>
+        {% endif %}
+      </div>
+      <p class="muted">ads_read 권한으로 광고 성과만 읽습니다. 연결 후 수집할 광고계정을 선택하세요.</p>
+      {% if status.meta.connected and status.meta.selected_accounts %}
+      <div class="muted" style="margin-top:0.4rem">
+        <div>수집 중</div>
+        <ul class="account-selected-list">
+          {% for acc in status.meta.selected_accounts %}
+          <li><strong>{{ acc.name }}</strong> <small>{{ acc.id }}</small></li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+      {% if status.meta.expires_at %}
+      <p class="muted">만료: {{ status.meta.expires_at }}</p>
+      {% endif %}
+
+      {% if status.meta.needs_select and status.meta.available_accounts %}
+      <form method="post" action="/oauth/meta/select" class="mini-form account-pick" style="margin-top:0.8rem">
+        <p class="muted" style="margin:0">수집할 광고계정 (복수 선택 가능)</p>
+        <div class="account-check-list">
+          {% for acc in status.meta.available_accounts %}
+          <label class="account-check">
+            <input type="checkbox" name="account_ids" value="{{ acc.id }}"
+              {% if acc.id in selected_meta_ids %}checked{% endif %} />
+            <span>
+              <strong>{{ acc.name or acc.id }}</strong>
+              <small class="muted">{{ acc.id }}{% if acc.account_id and acc.account_id != acc.id %} · {{ acc.account_id }}{% endif %}</small>
+            </span>
+          </label>
+          {% endfor %}
+        </div>
+        <button type="submit">선택한 계정으로 연결 완료</button>
+      </form>
+      {% endif %}
+
+      <div class="form-actions" style="margin-top:1rem">
+        {% if status.meta_app_ready %}
+          <a class="btn-link-primary" href="/oauth/meta/start">
+            {% if status.meta.connected or status.meta.status == 'pending_select' %}Meta 다시 연결{% else %}Meta 연결{% endif %}
+          </a>
+        {% else %}
+          <p class="hint-error">서버에 META_APP_ID / META_APP_SECRET 이 필요합니다.</p>
+        {% endif %}
+        {% if status.meta.connected or status.meta.status == 'pending_select' %}
+          <form method="post" action="/connections/meta/disconnect">
+            <button type="submit" class="ghost">연결 해제</button>
+          </form>
+        {% endif %}
+      </div>
+      <ol class="muted" style="margin-top:1rem;padding-left:1.2rem;font-size:0.85rem">
+        <li>Meta로 로그인하고 광고 계정 읽기 권한을 허용하세요.</li>
+        <li>목록에서 수집할 광고계정만 체크하세요.</li>
+        <li>Development 앱이면 테스트 유저만 연결됩니다.</li>
+      </ol>
+    </article>
+
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Google Ads</h2>
+        {% if status.google_ads.connected %}
+          <span class="platform-badge google">연결됨</span>
+        {% elif status.google_ads.env_fallback %}
+          <span class="platform-badge">.env 사용 중</span>
+        {% else %}
+          <span class="platform-badge">미연결</span>
+        {% endif %}
+      </div>
+      <p class="muted">Google 로그인 후 접근 가능한 Ads 계정을 선택합니다.</p>
+      {% if status.google_ads.account_ids %}
+      <p class="muted">고객 ID: {{ status.google_ads.account_ids | join(', ') }}</p>
+      {% endif %}
+
+      {% if pending_google_customers %}
+      <form method="post" action="/oauth/google/select" class="mini-form" style="margin-top:0.8rem">
+        <label class="muted" for="customer_id">Ads 고객 선택</label>
+        <select id="customer_id" name="customer_id" required>
+          {% for cid in pending_google_customers %}
+          <option value="{{ cid }}">{{ cid }}</option>
+          {% endfor %}
+        </select>
+        <label class="muted" for="login_customer_id">MCC Login Customer ID (선택)</label>
+        <input id="login_customer_id" name="login_customer_id" placeholder="없으면 비움" value="{{ status.google_ads.login_customer_id or '' }}" />
+        <button type="submit">이 계정으로 연결 완료</button>
+      </form>
+      {% else %}
+      <div class="form-actions" style="margin-top:1rem">
+        {% if status.google_oauth_ready %}
+          <a class="btn-link-primary" href="/oauth/google/start">Google 연결</a>
+        {% else %}
+          <p class="hint-error">서버에 GOOGLE_ADS_CLIENT_ID / SECRET 이 필요합니다.</p>
+        {% endif %}
+        {% if status.google_ads.connected %}
+          <form method="post" action="/connections/google/disconnect">
+            <button type="submit" class="ghost">연결 해제</button>
+          </form>
+        {% endif %}
+      </div>
+      {% endif %}
+      <ol class="muted" style="margin-top:1rem;padding-left:1.2rem;font-size:0.85rem">
+        <li>Google 계정으로 로그인·동의를 완료하세요.</li>
+        <li>Developer Token은 서비스(.env) 것을 사용합니다.</li>
+        <li>권한이 없으면 고객 목록이 비어 있을 수 있습니다.</li>
+      </ol>
+    </article>
+  </main>
+</body>
+</html>
