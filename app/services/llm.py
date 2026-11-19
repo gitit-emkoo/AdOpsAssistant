@@ -200,12 +200,13 @@ def generate_monthly_insights(context: dict[str, Any], settings: Settings | None
         "형식은 아래처럼 평범한 텍스트만 써.\n"
         "월간 요약:\n"
         "- ...\n"
-        "채널별 포인트:\n"
+        "광고(캠페인)별 포인트:\n"
         "- ...\n"
         "개선 제안:\n"
         "1. ...\n"
         "2. ...\n"
         "3. ...\n"
-        "숫자(지출·클릭·설치·CPI)를 한두 개만 짚고, 별표나 제목 장식은 쓰지 마."
+        "가능하면 광고 이름을 언급하고, 숫자(지출·클릭·설치·CPI)는 한두 개만 짚어. "
+        "별표나 제목 장식은 쓰지 마."
     )
     return generate_answer(question, context, settings)

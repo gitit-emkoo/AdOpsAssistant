@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.collectors import (
     collect_all_metrics,
@@ -80,6 +81,22 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 app = FastAPI(title="AdOps Assistant")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if exc.status_code == 404:
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        return templates.TemplateResponse(
+            request,
+            "404.html",
+            {"app_name": get_settings().app_name},
+            status_code=404,
+        )
+    if exc.status_code == 401 and "text/html" in request.headers.get("accept", ""):
+        return RedirectResponse("/login", status_code=303)
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
 
 
 @app.on_event("startup")
@@ -759,39 +776,11 @@ def connections_page(request: Request, flash: str | None = None, level: str | No
     if not user:
         return RedirectResponse("/login", status_code=303)
     uid = int(user["id"])
-    meta_conn = get_connection(uid, "meta")
-    if meta_conn and meta_conn.get("access_token"):
-        available = []
-        raw = meta_conn.get("meta_json") or ""
-        if raw:
-            try:
-                available = (json.loads(raw) if isinstance(raw, str) else raw).get(
-                    "available_accounts"
-                ) or []
-            except Exception:  # noqa: BLE001
-                available = []
-        needs_names = (not available) or any(
-            isinstance(a, str)
-            or not str((a or {}).get("name") or "").strip()
-            or str((a or {}).get("name") or "") == str((a or {}).get("id") or "")
-            for a in available
-        )
-        # Also refresh when we only have selected ids without a catalog.
-        if needs_names or not available:
-            try:
-                refresh_meta_available_accounts(uid)
-            except Exception:  # noqa: BLE001
-                pass
+    try:
+        refresh_meta_available_accounts(uid)
+    except Exception:  # noqa: BLE001
+        pass
     status = connection_status_summary(uid)
-    google = get_connection(uid, "google_ads")
-    pending: list[str] = []
-    if google and google.get("status") == "pending_select":
-        pending = [
-            p.strip()
-            for p in (google.get("account_ids") or "").replace(";", ",").split(",")
-            if p.strip()
-        ]
-    selected_meta = set(status.get("meta", {}).get("account_ids") or [])
     return templates.TemplateResponse(
         request,
         "connections.html",
@@ -799,8 +788,6 @@ def connections_page(request: Request, flash: str | None = None, level: str | No
             "app_name": get_settings().app_name,
             "user": user,
             "status": status,
-            "pending_google_customers": pending,
-            "selected_meta_ids": selected_meta,
             "flash": flash,
             "flash_level": level or "ok",
         },
@@ -808,25 +795,31 @@ def connections_page(request: Request, flash: str | None = None, level: str | No
 
 
 @app.post("/connections/meta/disconnect")
-def disconnect_meta(request: Request):
+async def disconnect_meta(request: Request):
     user = current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
-    delete_connection(int(user["id"]), "meta")
+    form = await request.form()
+    cid = form.get("connection_id")
+    connection_id = int(cid) if cid else None
+    delete_connection(int(user["id"]), "meta", connection_id=connection_id)
     return RedirectResponse(
-        "/connections?flash=Meta%20연결을%20해제했습니다.&level=ok",
+        "/connections?flash=Meta%20로그인을%20해제했습니다.&level=ok",
         status_code=303,
     )
 
 
 @app.post("/connections/google/disconnect")
-def disconnect_google(request: Request):
+async def disconnect_google(request: Request):
     user = current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
-    delete_connection(int(user["id"]), "google_ads")
+    form = await request.form()
+    cid = form.get("connection_id")
+    connection_id = int(cid) if cid else None
+    delete_connection(int(user["id"]), "google_ads", connection_id=connection_id)
     return RedirectResponse(
-        "/connections?flash=Google%20연결을%20해제했습니다.&level=ok",
+        "/connections?flash=Google%20로그인을%20해제했습니다.&level=ok",
         status_code=303,
     )
 
@@ -842,12 +835,12 @@ def oauth_meta_start(request: Request):
             "/connections?flash=META_APP_ID/SECRET%20필요&level=danger",
             status_code=303,
         )
-    state = save_oauth_state(int(user["id"]), "meta")
+    state = save_oauth_state(int(user["id"]), "meta", {"mode": "add"})
     try:
         url = meta_authorize_url(state, settings)
     except Exception as exc:  # noqa: BLE001
         return RedirectResponse(
-            f"/connections?flash={str(exc)[:120]}&level=danger",
+            f"/connections?flash={quote(str(exc)[:120])}&level=danger",
             status_code=303,
         )
     return RedirectResponse(url, status_code=302)
@@ -862,7 +855,7 @@ def oauth_meta_callback(
 ):
     if error:
         return RedirectResponse(
-            f"/connections?flash=Meta%20동의%20취소&level=warn",
+            "/connections?flash=Meta%20동의%20취소&level=warn",
             status_code=303,
         )
     if not code or not state:
@@ -870,27 +863,30 @@ def oauth_meta_callback(
             "/connections?flash=Meta%20콜백%20파라미터%20없음&level=danger",
             status_code=303,
         )
-    user_id = consume_oauth_state(state, "meta")
-    if not user_id:
+    consumed = consume_oauth_state(state, "meta")
+    if not consumed:
         return RedirectResponse(
             "/connections?flash=OAuth%20state%20만료&level=danger",
             status_code=303,
         )
+    user_id, _payload = consumed
     try:
         payload = exchange_meta_code(code)
         conn = save_meta_connection(user_id, payload)
     except Exception as exc:  # noqa: BLE001
         return RedirectResponse(
-            f"/connections?flash=Meta%20연동%20실패:%20{str(exc)[:100]}&level=danger",
+            f"/connections?flash={quote('Meta 연동 실패: ' + str(exc)[:100])}&level=danger",
             status_code=303,
         )
     if (conn or {}).get("status") == "pending_select":
         return RedirectResponse(
-            "/connections?flash=Meta%20계정%20목록%20불러옴.%20수집할%20광고계정을%20선택하세요.&level=ok",
+            "/connections?flash="
+            + quote("Meta 로그인 추가됨. 광고계정을 선택하세요.")
+            + "&level=ok",
             status_code=303,
         )
     return RedirectResponse(
-        "/connections?flash=Meta%20연결%20완료&level=ok",
+        "/connections?flash=" + quote("Meta 연결 완료") + "&level=ok",
         status_code=303,
     )
 
@@ -902,34 +898,37 @@ async def oauth_meta_select(request: Request):
         return RedirectResponse("/login", status_code=303)
     form = await request.form()
     selected = [str(v) for v in form.getlist("account_ids") if str(v).strip()]
-    conn = get_connection(int(user["id"]), "meta")
+    cid_raw = form.get("connection_id")
+    connection_id = int(cid_raw) if cid_raw else None
+    conn = get_connection(int(user["id"]), "meta", connection_id=connection_id)
     if not conn or not conn.get("access_token"):
         return RedirectResponse(
-            "/connections?flash=먼저%20Meta%20연결을%20하세요&level=danger",
+            "/connections?flash=" + quote("먼저 Meta 연결을 하세요") + "&level=danger",
             status_code=303,
         )
     try:
-        extra = {}
-        raw = conn.get("meta_json") or ""
-        if raw:
-            extra = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        extra = conn.get("meta") or {}
         save_meta_connection(
             int(user["id"]),
             {
                 "access_token": conn.get("access_token"),
                 "expires_at": conn.get("expires_at"),
-                "available_accounts": (extra or {}).get("available_accounts") or [],
+                "available_accounts": extra.get("available_accounts") or [],
+                "connection_key": conn.get("connection_key"),
+                "label": conn.get("label"),
             },
             selected_account_ids=selected,
             status="connected",
+            connection_key=str(conn.get("connection_key") or "default"),
+            label=str(conn.get("label") or ""),
         )
     except Exception as exc:  # noqa: BLE001
         return RedirectResponse(
-            f"/connections?flash={str(exc)[:120]}&level=danger",
+            f"/connections?flash={quote(str(exc)[:120])}&level=danger",
             status_code=303,
         )
     return RedirectResponse(
-        "/connections?flash=Meta%20광고계정%20선택%20완료&level=ok",
+        "/connections?flash=" + quote("Meta 광고계정 선택 완료") + "&level=ok",
         status_code=303,
     )
 
@@ -945,12 +944,12 @@ def oauth_google_start(request: Request):
             "/connections?flash=GOOGLE_ADS_CLIENT_ID/SECRET%20필요&level=danger",
             status_code=303,
         )
-    state = save_oauth_state(int(user["id"]), "google_ads")
+    state = save_oauth_state(int(user["id"]), "google_ads", {"mode": "add"})
     try:
         url = google_authorize_url(state, settings)
     except Exception as exc:  # noqa: BLE001
         return RedirectResponse(
-            f"/connections?flash={str(exc)[:120]}&level=danger",
+            f"/connections?flash={quote(str(exc)[:120])}&level=danger",
             status_code=303,
         )
     return RedirectResponse(url, status_code=302)
@@ -972,58 +971,73 @@ def oauth_google_callback(
             "/connections?flash=Google%20콜백%20파라미터%20없음&level=danger",
             status_code=303,
         )
-    user_id = consume_oauth_state(state, "google_ads")
-    if not user_id:
+    consumed = consume_oauth_state(state, "google_ads")
+    if not consumed:
         return RedirectResponse(
             "/connections?flash=OAuth%20state%20만료&level=danger",
             status_code=303,
         )
+    user_id, _payload = consumed
     try:
         payload = exchange_google_code(code)
         save_google_connection(user_id, payload)
     except Exception as exc:  # noqa: BLE001
         return RedirectResponse(
-            f"/connections?flash=Google%20연동%20실패:%20{str(exc)[:100]}&level=danger",
+            f"/connections?flash={quote('Google 연동 실패: ' + str(exc)[:100])}&level=danger",
             status_code=303,
         )
     return RedirectResponse(
-        "/connections?flash=Google%20계정%20목록%20불러옴.%20고객을%20선택하세요.&level=ok",
+        "/connections?flash="
+        + quote("Google 로그인 추가됨. Ads 고객을 선택하세요.")
+        + "&level=ok",
         status_code=303,
     )
 
 
 @app.post("/oauth/google/select")
-def oauth_google_select(
-    request: Request,
-    customer_id: str = Form(...),
-    login_customer_id: str = Form(""),
-):
+async def oauth_google_select(request: Request):
     user = current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
-    conn = get_connection(int(user["id"]), "google_ads")
+    form = await request.form()
+    selected = [str(v) for v in form.getlist("customer_ids") if str(v).strip()]
+    if not selected and form.get("customer_id"):
+        selected = [str(form.get("customer_id"))]
+    login_customer_id = str(form.get("login_customer_id") or "").strip()
+    cid_raw = form.get("connection_id")
+    connection_id = int(cid_raw) if cid_raw else None
+    conn = get_connection(int(user["id"]), "google_ads", connection_id=connection_id)
     if not conn or not conn.get("refresh_token"):
         return RedirectResponse(
-            "/connections?flash=먼저%20Google%20연결을%20하세요&level=danger",
+            "/connections?flash=" + quote("먼저 Google 연결을 하세요") + "&level=danger",
             status_code=303,
         )
-    accounts = [
-        p.strip()
-        for p in (conn.get("account_ids") or "").replace(";", ",").split(",")
-        if p.strip()
-    ]
-    save_google_connection(
-        int(user["id"]),
-        {
-            "refresh_token": conn["refresh_token"],
-            "access_token": conn.get("access_token"),
-            "account_ids": accounts,
-        },
-        selected_customer_id=customer_id.strip(),
-        login_customer_id=(login_customer_id or "").strip(),
-        status="connected",
-    )
+    try:
+        extra = conn.get("meta") or {}
+        available = extra.get("available_customers") or list(
+            conn.get("account_ids_list") or []
+        )
+        save_google_connection(
+            int(user["id"]),
+            {
+                "refresh_token": conn["refresh_token"],
+                "access_token": conn.get("access_token"),
+                "available_customers": available,
+                "connection_key": conn.get("connection_key"),
+                "label": conn.get("label"),
+            },
+            selected_customer_ids=selected,
+            login_customer_id=login_customer_id,
+            status="connected",
+            connection_key=str(conn.get("connection_key") or "default"),
+            label=str(conn.get("label") or ""),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return RedirectResponse(
+            f"/connections?flash={quote(str(exc)[:120])}&level=danger",
+            status_code=303,
+        )
     return RedirectResponse(
-        "/connections?flash=Google%20Ads%20연결%20완료&level=ok",
+        "/connections?flash=" + quote("Google Ads 계정 선택 완료") + "&level=ok",
         status_code=303,
     )

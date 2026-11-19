@@ -235,6 +235,7 @@
             <thead>
               <tr>
                 <th>채널</th>
+                <th>광고</th>
                 <th>일자</th>
                 <th class="num">지출</th>
                 <th class="num">클릭</th>
@@ -255,6 +256,7 @@
                     <span class="platform-badge">{{ m.platform }}</span>
                   {% endif %}
                 </td>
+                <td>{{ m.entity_name or m.entity_id or '—' }}</td>
                 <td class="date-cell">{{ m.metric_date }}</td>
                 <td class="num">{{ '{:,.0f}'.format(m.spend) }}</td>
                 <td class="num">{{ m.clicks }}</td>

@@ -596,6 +596,12 @@ th.num, td.num {
 }
 .account-selected-list li strong { font-weight: 600; }
 .account-selected-list small { opacity: 0.75; }
+.conn-block {
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
+}
+.conn-block:first-of-type { border-top: 0; padding-top: 0; }
 .check-row {
   display: flex;
   align-items: center;

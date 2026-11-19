@@ -33,13 +33,24 @@ def build_context(metrics: list[AdMetrics]) -> dict[str, Any]:
     }
 
 
+def _active_metrics(metrics: list[AdMetrics]) -> list[AdMetrics]:
+    """메일/요약용: 실제 집행(노출·클릭·지출) 있는 행만."""
+    return [
+        m
+        for m in metrics
+        if (m.spend or 0) > 0 or (m.impressions or 0) > 0 or (m.clicks or 0) > 0
+    ]
+
+
 def metrics_to_html(metrics: list[AdMetrics]) -> str:
     rows = []
-    for m in metrics:
+    for m in _active_metrics(metrics):
         label = "Google" if m.platform == "google_ads" else "Meta"
+        name = html.escape(m.entity_name or m.entity_id or "-")
         rows.append(
             "<tr>"
             f"<td>{label}</td>"
+            f"<td>{name}</td>"
             f"<td>{_krw(m.spend)}</td>"
             f"<td>{m.clicks:,}</td>"
             f"<td>{m.installs:,.0f}</td>"
@@ -47,12 +58,16 @@ def metrics_to_html(metrics: list[AdMetrics]) -> str:
             f"<td>{_krw(m.cpi) if m.installs else '-'}</td>"
             "</tr>"
         )
+    if not rows:
+        rows.append(
+            "<tr><td colspan='7' style='color:#666'>해당일 집행된 광고가 없습니다.</td></tr>"
+        )
     return (
         "<table border='0' cellpadding='8' cellspacing='0' "
         "style='border-collapse:collapse;font-family:sans-serif;font-size:14px;"
-        "width:100%;max-width:640px'>"
+        "width:100%;max-width:720px'>"
         "<thead><tr style='background:#f3f4f6;text-align:left'>"
-        "<th>채널</th><th>지출</th><th>클릭</th><th>설치</th><th>설치율</th><th>CPI</th>"
+        "<th>채널</th><th>광고</th><th>지출</th><th>클릭</th><th>설치</th><th>설치율</th><th>CPI</th>"
         "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
@@ -114,9 +129,19 @@ def build_email_html(context: dict[str, Any], insights: str, metrics: list[AdMet
 
 def run_daily_report(send: bool = True, metric_date: date | None = None) -> dict[str, Any]:
     day = metric_date or (date.today() - timedelta(days=1))
-    metrics = collect_all_metrics(day)
+    metrics = _active_metrics(list(collect_all_metrics(day)))
     context = build_context(metrics)
-    insights = strip_markdown(generate_daily_insights(context))
+    if metrics:
+        insights = strip_markdown(generate_daily_insights(context))
+    else:
+        insights = (
+            "요약:\n"
+            f"- {day.isoformat()}에는 집행(노출·지출)된 광고가 없습니다.\n"
+            "이상 징후:\n"
+            "- 없음\n"
+            "오늘 할 일:\n"
+            "1. 진행 예정이면 캠페인 상태를 확인하세요."
+        )
     html_body = build_email_html(context, insights, metrics)
     site_url = (get_settings().app_base_url or "").rstrip("/") or "http://localhost:8000"
     text = f"{insights}\n\n대시보드: {site_url}"
@@ -196,6 +221,7 @@ def aggregate_month_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     totals = _empty_totals()
     by_platform: dict[str, dict[str, float | int]] = {}
     by_day: dict[str, dict[str, float | int]] = {}
+    by_campaign: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in rows:
         _add_row(totals, row)
         platform = str(row.get("platform") or "unknown")
@@ -205,6 +231,17 @@ def aggregate_month_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if day:
             by_day.setdefault(day, _empty_totals())
             _add_row(by_day[day], row)
+        entity_id = str(row.get("entity_id") or "")
+        entity_name = str(row.get("entity_name") or entity_id or "(이름 없음)")
+        key = (platform, entity_id, entity_name)
+        if key not in by_campaign:
+            by_campaign[key] = {
+                **_empty_totals(),
+                "platform": platform,
+                "entity_id": entity_id,
+                "entity_name": entity_name,
+            }
+        _add_row(by_campaign[key], row)
     platforms = [
         {"platform": key, **_with_rates(val)}
         for key, val in sorted(by_platform.items())
@@ -213,9 +250,22 @@ def aggregate_month_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         {"metric_date": key, **_with_rates(val)}
         for key, val in sorted(by_day.items())
     ]
+    campaigns = [
+        {
+            "platform": val["platform"],
+            "entity_id": val["entity_id"],
+            "entity_name": val["entity_name"],
+            **_with_rates(val),
+        }
+        for val in sorted(
+            by_campaign.values(),
+            key=lambda x: (-float(x.get("spend") or 0), str(x.get("entity_name") or "")),
+        )
+    ]
     return {
         "totals": _with_rates(totals),
         "platforms": platforms,
+        "campaigns": campaigns,
         "days": days,
         "day_count": len(days),
         "row_count": len(rows),
@@ -256,6 +306,32 @@ def monthly_platforms_to_html(platforms: list[dict[str, Any]]) -> str:
     )
 
 
+def monthly_campaigns_to_html(campaigns: list[dict[str, Any]], *, limit: int = 20) -> str:
+    rows = []
+    for p in campaigns[:limit]:
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(_platform_label(str(p.get('platform'))))}</td>"
+            f"<td>{html.escape(str(p.get('entity_name') or '-'))}</td>"
+            f"<td>{_krw(float(p.get('spend') or 0))}</td>"
+            f"<td>{int(p.get('clicks') or 0):,}</td>"
+            f"<td>{float(p.get('installs') or 0):,.0f}</td>"
+            f"<td>{_krw(float(p.get('cpi') or 0)) if float(p.get('installs') or 0) else '-'}</td>"
+            "</tr>"
+        )
+    if not rows:
+        rows.append("<tr><td colspan='6'>데이터 없음</td></tr>")
+    return (
+        "<table border='0' cellpadding='8' cellspacing='0' "
+        "style='border-collapse:collapse;font-family:sans-serif;font-size:14px;"
+        "width:100%;max-width:720px'>"
+        "<thead><tr style='background:#f3f4f6;text-align:left'>"
+        "<th>채널</th><th>광고</th><th>지출</th><th>클릭</th><th>설치</th><th>CPI</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
 def build_monthly_email_html(report: dict[str, Any]) -> str:
     site_url = (get_settings().app_base_url or "").rstrip("/") or "http://localhost:8000"
     reports_url = f"{site_url}/reports?year={report['year']}&month={report['month']}"
@@ -282,6 +358,8 @@ def build_monthly_email_html(report: dict[str, Any]) -> str:
         CPI <strong>{_krw(float(totals.get('cpi') or 0)) if float(totals.get('installs') or 0) else '-'}</strong>
       </p>
       {monthly_platforms_to_html(report.get('platforms') or [])}
+      <h3 style="margin:22px 0 8px">광고별 (상위)</h3>
+      {monthly_campaigns_to_html(report.get('campaigns') or [])}
       <h3 style="margin:22px 0 8px">월간 요약</h3>
       {insights_to_html(str(report.get('insights') or ''))}
       <p style="margin:16px 0 0;color:#666;font-size:13px">
@@ -406,6 +484,7 @@ def build_monthly_report(
             "end_date": end.isoformat(),
             "totals": agg["totals"],
             "platforms": agg["platforms"],
+            "campaigns": agg["campaigns"][:15],
             "days": agg["days"][-10:],
             "demo_mode": get_settings().demo_mode,
         }
@@ -422,6 +501,7 @@ def build_monthly_report(
         "end_date": end.isoformat(),
         "totals": agg["totals"],
         "platforms": agg["platforms"],
+        "campaigns": agg["campaigns"],
         "days": agg["days"],
         "day_count": agg["day_count"],
         "insights": insights,
@@ -435,6 +515,7 @@ def build_monthly_report(
         summary={
             "totals": agg["totals"],
             "platforms": agg["platforms"],
+            "campaigns": agg["campaigns"][:30],
             "day_count": agg["day_count"],
         },
         insights=insights,

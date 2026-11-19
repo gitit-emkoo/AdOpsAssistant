@@ -1,4 +1,5 @@
 .env
+docs/INTERNAL.md
 .venv/
 venv/
 __pycache__/

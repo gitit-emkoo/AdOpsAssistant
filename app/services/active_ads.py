@@ -141,24 +141,57 @@ def _write_cache(payload: dict[str, Any], user_id: int | None = None) -> None:
         )
 
 
+def _fetch_active_for_overlays(
+    metric_date: str,
+    google_overlays: list[Settings],
+    meta_overlays: list[Settings],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    items: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for settings in google_overlays:
+        if not settings.google_ads_configured:
+            continue
+        try:
+            items.extend(fetch_google_active_campaigns(metric_date, settings))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"google_ads: {exc}")
+    for settings in meta_overlays:
+        if not settings.meta_configured:
+            continue
+        try:
+            meta_items = fetch_meta_active_campaigns(metric_date, settings)
+            items.extend(meta_items)
+            errors.extend([f"meta: {e}" for e in (meta_items.errors or [])])
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"meta: {exc}")
+    return items, errors
+
+
 def get_active_ads(
     *,
     force_refresh: bool = False,
     settings: Settings | None = None,
     user_id: int | None = None,
 ) -> dict[str, Any]:
-    if settings is None:
-        if user_id is not None:
-            from app.services.connections import settings_for_user
+    from app.services.connections import settings_overlays_for_platform, settings_for_user
 
-            settings = settings_for_user(user_id)
-        else:
-            settings = get_settings()
+    if settings is None:
+        settings = settings_for_user(user_id) if user_id is not None else get_settings()
+    google_overlays = (
+        settings_overlays_for_platform(user_id, "google_ads")
+        if user_id is not None
+        else [settings]
+    )
+    meta_overlays = (
+        settings_overlays_for_platform(user_id, "meta")
+        if user_id is not None
+        else [settings]
+    )
+
     if not force_refresh:
         cached = _read_cache(user_id)
         if cached:
             cached_errors = " ".join(str(e) for e in (cached.get("errors") or []))
-            # 토큰 만료로 실패한 옛 캐시는 바로 다시 수집
             if "expired" in cached_errors.lower() or "access token" in cached_errors.lower():
                 pass
             else:
@@ -172,35 +205,16 @@ def get_active_ads(
     if settings.demo_mode:
         items = _demo_campaigns(metric_date)
     else:
-        if settings.google_ads_configured:
-            try:
-                items.extend(fetch_google_active_campaigns(metric_date, settings))
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"google_ads: {exc}")
-        if settings.meta_configured:
-            try:
-                meta_items = fetch_meta_active_campaigns(metric_date, settings)
-                items.extend(meta_items)
-                errors.extend([f"meta: {e}" for e in (meta_items.errors or [])])
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"meta: {exc}")
+        items, errors = _fetch_active_for_overlays(
+            metric_date, google_overlays, meta_overlays
+        )
 
-    # 오늘 성과가 비어 있으면 어제 성과로 한 번 더 (조조 빈 데이터 보완)
     if not settings.demo_mode and not items and not errors:
         yesterday = (_today(settings) - timedelta(days=1)).isoformat()
         metric_date = yesterday
-        if settings.google_ads_configured:
-            try:
-                items.extend(fetch_google_active_campaigns(yesterday, settings))
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"google_ads: {exc}")
-        if settings.meta_configured:
-            try:
-                meta_items = fetch_meta_active_campaigns(yesterday, settings)
-                items.extend(meta_items)
-                errors.extend([f"meta: {e}" for e in (meta_items.errors or [])])
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"meta: {exc}")
+        items, errors = _fetch_active_for_overlays(
+            yesterday, google_overlays, meta_overlays
+        )
 
     items = [i for i in items if _is_running_on(i, metric_date)]
     items.sort(key=lambda x: (-float(x.get("spend") or 0), x.get("name") or ""))
@@ -290,7 +304,9 @@ def get_campaign_adsets(
                 },
             ]
         elif platform in {"google_ads", "google"}:
-            items = fetch_google_ad_groups(campaign_id, day, settings)
+            items = fetch_google_ad_groups(
+                campaign_id, day, settings, account_id=account_id or None
+            )
         elif platform in {"meta", "facebook"}:
             if not account_id:
                 return {

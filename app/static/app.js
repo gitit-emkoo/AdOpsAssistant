@@ -16,6 +16,15 @@ const tokenModal = document.getElementById("tokenModal");
 const shortTokenInput = document.getElementById("shortTokenInput");
 const extendTokenBtn = document.getElementById("extendTokenBtn");
 const extendResult = document.getElementById("extendResult");
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 async function apiFetch(url, options) {
   const res = await fetch(url, options);
   if (res.status === 401) {
@@ -93,13 +102,14 @@ function renderMetrics(items, meta = {}) {
   updateMetricsKpis(items);
   if (!items || !items.length) {
     body.innerHTML =
-      '<tr><td colspan="7" class="empty-row">선택한 날짜 데이터가 없습니다. 새로고침을 눌러보세요.</td></tr>';
+      '<tr><td colspan="8" class="empty-row">선택한 날짜 데이터가 없습니다. 새로고침을 눌러보세요.</td></tr>';
   } else {
     body.innerHTML = items
       .map((m) => {
         const installs = Number(m.installs || 0);
         const clicks = Number(m.clicks || 0);
         const spend = Number(m.spend || 0);
+        const name = m.entity_name || m.entity_id || "—";
         const installRate =
           m.install_rate != null
             ? Number(m.install_rate).toFixed(1)
@@ -114,6 +124,7 @@ function renderMetrics(items, meta = {}) {
               : "—";
         return `<tr>
           <td>${platformBadge(m.platform)}</td>
+          <td>${escapeHtml(String(name))}</td>
           <td class="date-cell">${m.metric_date}</td>
           <td class="num">${Math.round(spend).toLocaleString()}</td>
           <td class="num">${clicks}</td>

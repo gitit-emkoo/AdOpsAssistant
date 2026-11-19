@@ -67,14 +67,27 @@ class Settings(BaseSettings):
         return ids
 
     @property
+    def google_ads_customer_ids(self) -> list[str]:
+        raw = (self.google_ads_customer_id or "").replace(";", ",")
+        ids: list[str] = []
+        seen: set[str] = set()
+        for part in raw.split(","):
+            value = part.strip().replace("-", "")
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            ids.append(value)
+        return ids
+
+    @property
     def google_ads_configured(self) -> bool:
         # 2026-09 이후 developer token은 선택 사항(헤더에 있어도 무시될 수 있음).
-        # OAuth + Customer ID 만 있으면 실연동 시도합니다.
+        # OAuth + Customer ID(들) 만 있으면 실연동 시도합니다.
         return bool(
             self.google_ads_client_id
             and self.google_ads_client_secret
             and self.google_ads_refresh_token
-            and self.google_ads_customer_id
+            and self.google_ads_customer_ids
         )
 
     @property

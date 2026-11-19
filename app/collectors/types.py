@@ -15,6 +15,10 @@ class AdMetrics:
     conversion_value: float
     installs: float = 0.0
     source: str = "live"
+    entity_id: str = ""
+    entity_name: str = ""
+    entity_type: str = "campaign"  # campaign | account
+    account_id: str = ""
 
     @property
     def ctr(self) -> float:

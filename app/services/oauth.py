@@ -18,7 +18,9 @@ META_GRAPH = "https://graph.facebook.com/v21.0"
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-GOOGLE_ADS_SCOPE = "https://www.googleapis.com/auth/adwords"
+GOOGLE_ADS_SCOPE = (
+    "https://www.googleapis.com/auth/adwords openid email profile"
+)
 GOOGLE_ADS_SEARCH_URL = (
     "https://googleads.googleapis.com/v26/customers:listAccessibleCustomers"
 )
@@ -61,7 +63,8 @@ def google_authorize_url(state: str, settings: Settings | None = None) -> str:
         "response_type": "code",
         "scope": GOOGLE_ADS_SCOPE,
         "access_type": "offline",
-        "prompt": "consent",
+        # 다른 Google 계정 추가 시 계정 선택 화면 노출
+        "prompt": "select_account consent",
         "include_granted_scopes": "true",
         "state": state,
     }
@@ -107,10 +110,25 @@ def exchange_meta_code(code: str, settings: Settings | None = None) -> dict[str,
             ).isoformat()
 
         accounts = _list_meta_ad_accounts(client, token, settings.meta_api_version)
+        identity = {"id": "", "name": ""}
+        try:
+            me = client.get(
+                f"{META_GRAPH}/me",
+                params={"access_token": token, "fields": "id,name"},
+            )
+            if me.status_code < 400:
+                identity = {
+                    "id": str(me.json().get("id") or ""),
+                    "name": str(me.json().get("name") or ""),
+                }
+        except Exception:  # noqa: BLE001
+            pass
     return {
         "access_token": token,
         "expires_at": expires_at,
         "available_accounts": accounts,
+        "connection_key": identity.get("id") or "default",
+        "label": identity.get("name") or identity.get("id") or "Meta",
     }
 
 
@@ -148,44 +166,45 @@ def _list_meta_ad_accounts(
     return accounts
 
 
-def refresh_meta_available_accounts(user_id: int) -> list[dict[str, str]]:
+def refresh_meta_available_accounts(
+    user_id: int, *, connection_id: int | None = None
+) -> list[dict[str, str]]:
     """Re-fetch ad account id/name catalog for an existing Meta connection."""
-    from app.services.connections import get_connection
+    from app.services.connections import get_connection, list_connections
 
-    conn = get_connection(user_id, "meta")
-    if not conn or not conn.get("access_token"):
-        return []
+    if connection_id is not None:
+        conn = get_connection(user_id, "meta", connection_id=connection_id)
+        targets = [conn] if conn else []
+    else:
+        targets = list_connections(user_id, "meta")
     settings = get_settings()
-    with httpx.Client(timeout=30) as client:
-        accounts = _list_meta_ad_accounts(
-            client, conn["access_token"], settings.meta_api_version
+    last: list[dict[str, str]] = []
+    for conn in targets:
+        if not conn or not conn.get("access_token"):
+            continue
+        with httpx.Client(timeout=30) as client:
+            accounts = _list_meta_ad_accounts(
+                client, conn["access_token"], settings.meta_api_version
+            )
+        if not accounts:
+            continue
+        extra = dict(conn.get("meta") or {})
+        extra["available_accounts"] = accounts
+        extra["available_count"] = len(accounts)
+        selected = list(conn.get("account_ids_list") or [])
+        upsert_connection(
+            user_id,
+            "meta",
+            connection_key=str(conn.get("connection_key") or "default"),
+            label=str(conn.get("label") or ""),
+            access_token=conn.get("access_token"),
+            expires_at=conn.get("expires_at"),
+            account_ids=selected,
+            status=conn.get("status") or "connected",
+            meta_json=extra,
         )
-    if not accounts:
-        return []
-    extra: dict[str, Any] = {}
-    raw = conn.get("meta_json") or ""
-    if raw:
-        try:
-            extra = json.loads(raw) if isinstance(raw, str) else dict(raw)
-        except Exception:  # noqa: BLE001
-            extra = {}
-    extra["available_accounts"] = accounts
-    extra["available_count"] = len(accounts)
-    selected = [
-        p.strip()
-        for p in (conn.get("account_ids") or "").replace(";", ",").split(",")
-        if p.strip()
-    ]
-    upsert_connection(
-        user_id,
-        "meta",
-        access_token=conn.get("access_token"),
-        expires_at=conn.get("expires_at"),
-        account_ids=selected,
-        status=conn.get("status") or "connected",
-        meta_json=extra,
-    )
-    return accounts
+        last = accounts
+    return last
 
 
 def save_meta_connection(
@@ -194,6 +213,8 @@ def save_meta_connection(
     *,
     selected_account_ids: list[str] | None = None,
     status: str | None = None,
+    connection_key: str | None = None,
+    label: str | None = None,
 ) -> dict[str, Any]:
     available_raw = payload.get("available_accounts")
     if available_raw is None and payload.get("account_ids"):
@@ -256,9 +277,13 @@ def save_meta_connection(
             account_ids = []
             final_status = status or ("pending_select" if all_ids else "connected")
 
+    key = connection_key or payload.get("connection_key") or "default"
+    display = label if label is not None else payload.get("label") or key
     return upsert_connection(
         user_id,
         "meta",
+        connection_key=str(key),
+        label=str(display or ""),
         access_token=payload.get("access_token"),
         refresh_token=None,
         expires_at=payload.get("expires_at"),
@@ -295,10 +320,35 @@ def exchange_google_code(code: str, settings: Settings | None = None) -> dict[st
                 "refresh_token이 없습니다. Google 동의 화면에서 다시 허용해 주세요."
             )
         customers = list_google_accessible_customers(refresh, settings)
+        identity = {"id": "", "email": "", "name": ""}
+        if access:
+            try:
+                with httpx.Client(timeout=20) as client:
+                    info = client.get(
+                        "https://openidconnect.googleapis.com/v1/userinfo",
+                        headers={"Authorization": f"Bearer {access}"},
+                    )
+                    if info.status_code < 400:
+                        data = info.json()
+                        identity = {
+                            "id": str(data.get("sub") or ""),
+                            "email": str(data.get("email") or ""),
+                            "name": str(data.get("name") or data.get("email") or ""),
+                        }
+            except Exception:  # noqa: BLE001
+                pass
     return {
         "refresh_token": refresh,
         "access_token": access,
         "account_ids": customers,
+        "available_customers": customers,
+        "connection_key": identity.get("id")
+        or identity.get("email")
+        or "default",
+        "label": identity.get("email")
+        or identity.get("name")
+        or identity.get("id")
+        or "Google",
     }
 
 
@@ -350,29 +400,67 @@ def save_google_connection(
     payload: dict[str, Any],
     *,
     selected_customer_id: str | None = None,
+    selected_customer_ids: list[str] | None = None,
     login_customer_id: str | None = None,
     status: str | None = None,
+    connection_key: str | None = None,
+    label: str | None = None,
 ) -> dict[str, Any]:
-    accounts = list(payload.get("account_ids") or [])
-    if selected_customer_id:
-        accounts = [selected_customer_id] + [
-            a for a in accounts if a != selected_customer_id
-        ]
-    if status is None:
-        if selected_customer_id:
-            status = "connected"
-        elif len(accounts) == 1:
-            status = "connected"
+    available = [
+        str(a).strip().replace("-", "")
+        for a in (payload.get("available_customers") or payload.get("account_ids") or [])
+        if str(a).strip()
+    ]
+    seen: set[str] = set()
+    available_unique: list[str] = []
+    for cid in available:
+        if cid not in seen:
+            seen.add(cid)
+            available_unique.append(cid)
+    available = available_unique
+
+    if selected_customer_ids is not None:
+        selected = []
+        for raw in selected_customer_ids:
+            cid = str(raw or "").strip().replace("-", "")
+            if not cid:
+                continue
+            if available and cid not in available:
+                continue
+            if cid not in selected:
+                selected.append(cid)
+        if not selected:
+            raise RuntimeError("수집할 Google Ads 고객을 하나 이상 선택하세요.")
+        accounts = selected
+        final_status = status or "connected"
+    elif selected_customer_id:
+        cid = selected_customer_id.strip().replace("-", "")
+        accounts = [cid] if cid else []
+        final_status = status or "connected"
+    else:
+        if len(available) == 1:
+            accounts = available
+            final_status = status or "connected"
         else:
-            status = "pending_select"
+            accounts = []
+            final_status = status or ("pending_select" if available else "connected")
+
+    key = connection_key or payload.get("connection_key") or "default"
+    display = label if label is not None else payload.get("label") or key
     return upsert_connection(
         user_id,
         "google_ads",
+        connection_key=str(key),
+        label=str(display or ""),
         access_token=payload.get("access_token"),
         refresh_token=payload.get("refresh_token"),
         expires_at=None,
         account_ids=accounts,
         login_customer_id=login_customer_id or "",
-        status=status,
-        meta_json={"account_count": len(accounts)},
+        status=final_status,
+        meta_json={
+            "account_count": len(accounts),
+            "available_customers": available,
+            "available_count": len(available),
+        },
     )

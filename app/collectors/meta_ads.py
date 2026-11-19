@@ -59,94 +59,86 @@ def _parse_insights_row(row: dict) -> tuple[float, int, int, float, float, float
     return spend, impressions, clicks, conversions, installs, conversion_value
 
 
-def _fetch_account_metrics(
+def _fetch_account_campaign_metrics(
     account_id: str,
     metric_date: str,
     settings: Settings,
     client: httpx.Client,
-) -> AdMetrics:
+) -> list[AdMetrics]:
     url = (
         f"https://graph.facebook.com/{settings.meta_api_version}/"
         f"{account_id}/insights"
     )
-    resp = client.get(
-        url,
-        params={
-            "access_token": settings.meta_access_token,
-            "time_range": f'{{"since":"{metric_date}","until":"{metric_date}"}}',
-            "fields": "spend,impressions,clicks,actions,action_values",
-            "level": "account",
-        },
-    )
-    if resp.status_code >= 400:
-        detail = resp.text[:300].replace(settings.meta_access_token, "***")
-        raise RuntimeError(f"{account_id}: Meta API {resp.status_code}: {detail}")
-    data = resp.json().get("data", [])
-    if not data:
-        return AdMetrics(
-            platform="meta",
-            metric_date=metric_date,
-            spend=0,
-            impressions=0,
-            clicks=0,
-            conversions=0,
-            conversion_value=0,
-            installs=0,
-            source="live",
-        )
-    spend, impressions, clicks, conversions, installs, conversion_value = (
-        _parse_insights_row(data[0])
-    )
-    return AdMetrics(
-        platform="meta",
-        metric_date=metric_date,
-        spend=spend,
-        impressions=impressions,
-        clicks=clicks,
-        conversions=conversions,
-        conversion_value=conversion_value,
-        installs=installs,
-        source="live",
-    )
+    params: dict = {
+        "access_token": settings.meta_access_token,
+        "time_range": f'{{"since":"{metric_date}","until":"{metric_date}"}}',
+        "fields": "campaign_id,campaign_name,spend,impressions,clicks,actions,action_values",
+        "level": "campaign",
+        "limit": 200,
+    }
+    items: list[AdMetrics] = []
+    next_url: str | None = url
+    while next_url:
+        resp = client.get(next_url, params=params if next_url == url else None)
+        if resp.status_code >= 400:
+            detail = resp.text[:300].replace(settings.meta_access_token, "***")
+            raise RuntimeError(f"{account_id}: Meta API {resp.status_code}: {detail}")
+        payload = resp.json()
+        for row in payload.get("data") or []:
+            cid = str(row.get("campaign_id") or "").strip()
+            if not cid:
+                continue
+            spend, impressions, clicks, conversions, installs, conversion_value = (
+                _parse_insights_row(row)
+            )
+            # 집행 없는 캠페인(종료·0원)은 일 성과에서 제외
+            if spend <= 0 and impressions <= 0 and clicks <= 0:
+                continue
+            items.append(
+                AdMetrics(
+                    platform="meta",
+                    metric_date=metric_date,
+                    spend=spend,
+                    impressions=impressions,
+                    clicks=clicks,
+                    conversions=conversions,
+                    conversion_value=conversion_value,
+                    installs=installs,
+                    source="live",
+                    entity_id=cid,
+                    entity_name=str(row.get("campaign_name") or cid),
+                    entity_type="campaign",
+                    account_id=account_id,
+                )
+            )
+        next_url = (payload.get("paging") or {}).get("next")
+        params = {}
+    return items
 
 
-def fetch_meta_ads_metrics(metric_date: str, settings: Settings) -> AdMetrics:
-    """모든 Meta 광고계정 성과를 합산합니다."""
+def fetch_meta_ads_metrics(metric_date: str, settings: Settings) -> list[AdMetrics]:
+    """Meta 광고계정들의 캠페인(광고) 이름별 성과를 수집합니다."""
     accounts = _account_ids(settings)
     if not accounts:
         raise RuntimeError("META_AD_ACCOUNT_ID 가 비어 있습니다.")
 
-    total = AdMetrics(
-        platform="meta",
-        metric_date=metric_date,
-        spend=0,
-        impressions=0,
-        clicks=0,
-        conversions=0,
-        conversion_value=0,
-        installs=0,
-        source="live",
-    )
+    items: list[AdMetrics] = []
     errors: list[str] = []
     with httpx.Client(timeout=60) as client:
         for account_id in accounts:
             try:
-                item = _fetch_account_metrics(account_id, metric_date, settings, client)
-                total.spend += item.spend
-                total.impressions += item.impressions
-                total.clicks += item.clicks
-                total.conversions += item.conversions
-                total.conversion_value += item.conversion_value
-                total.installs += item.installs
+                items.extend(
+                    _fetch_account_campaign_metrics(
+                        account_id, metric_date, settings, client
+                    )
+                )
             except Exception as exc:  # noqa: BLE001
                 errors.append(str(exc))
 
-    if errors and total.spend == 0 and total.clicks == 0 and total.installs == 0:
+    if errors and not items:
         raise RuntimeError(" / ".join(errors))
-    if errors:
-        # 일부 계정만 실패해도 합산 결과는 반환
-        setattr(total, "account_errors", errors)
-    return total
+    items.sort(key=lambda m: (-m.spend, m.entity_name or ""))
+    return items
 
 
 def _meta_installs_from_actions(actions: list | None) -> float:
